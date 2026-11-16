@@ -1,8 +1,8 @@
 # LanPaster
 
-局域网剪贴板同步工具的第一个可运行版本（核心守护进程）。
+局域网剪贴板同步工具的可运行版本。
 
-当前版本先跑通同步内核：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地。托盘、配置面板、提示音、开机自启等桌面层功能尚未接入。
+当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、按需拉起的配置面板。提示音、开机自启等还在后续迭代。
 
 ## 已实现
 
@@ -23,21 +23,30 @@
 - 本地配置：`~/Library/Application Support/LanPaster/config.toml`（macOS）、`~/.config/LanPaster/config.toml`（Linux）、`%APPDATA%\LanPaster\config.toml`（Windows）
 - 首次运行生成 32 字节随机 PSK 和设备 ID；配置权限 0600
 - 循环抑制：本地事件指纹 + 远端写入后的下一次轮询抑制 + 事件 ID 去重
+- 原生系统托盘（`tray-icon` + `muda` + `winit`）：
+  - 启用 / 暂停剪贴同步（勾选菜单项）
+  - 在线设备子菜单，自动刷新
+  - 打开配置面板
+  - 推送当前剪贴板
+  - 退出程序
+  - macOS 使用 Accessory 激活策略，不显示 Dock 图标
+- 配置面板：独立进程按需拉起（`lanpaster ui`），关闭即退出，不常驻；保存 TOML 配置
+- 无界面模式：`lanpaster run --headless`，适合服务器 / 调试 / 无桌面环境
 
 ## 尚未实现
 
-- 系统托盘 / 原生菜单
-- Slint 配置面板
 - 收到剪贴的提示音
 - 开机自启、单实例锁
-- 配置热加载
-- 剪贴历史、设备列表 UI
+- 配置热加载（当前保存配置后需要重启 LanPaster 生效）
+- 剪贴历史
+- 接收文件缓存上限的强制清理
+- 剪贴板轮询优化（当前仍是定时轮询，图片场景有优化空间）
 - Linux GNOME Wayland 的原生后台剪贴板监听（Mutter 不实现 data-control；目前只能依赖 XWayland 或桌面扩展）
 - 目录、符号链接、断点续传（一期仅常规文件）
 
 ## 构建
 
-需要 Rust stable（本项目在 macOS arm64 上验证）。
+需要 Rust stable（本项目在 macOS arm64 上验证；Windows / Linux 代码路径已写但尚未实测）。
 
 ```bash
 cargo build --release
@@ -56,8 +65,22 @@ psk:    0123...（64 位 hex）
 
 ## 运行
 
+默认启动托盘（不显示 Dock 图标）：
+
 ```bash
 ./target/release/lanpaster run
+```
+
+无桌面环境 / 调试时使用无界面模式：
+
+```bash
+./target/release/lanpaster run --headless
+```
+
+单独打开配置面板（托盘菜单“打开配置面板”也是启动这个子进程）：
+
+```bash
+./target/release/lanpaster ui
 ```
 
 默认开启 mDNS 自动发现。也可以在配置里关闭 mDNS，使用手动直连：
@@ -138,6 +161,10 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 - `src/crypto.rs`：Noise 握手与加密帧
 - `src/net.rs`：TCP 监听、拨号、连接管理、文件/图片/文本传输、限额校验
 - `src/mdns.rs`：mDNS 注册与发现
+- `src/tray.rs`：原生托盘、菜单事件、winit 事件循环
+- `src/ui.rs`：Slint 配置面板（独立进程）
+- `ui/app.slint`：配置窗口布局
+- `assets/tray-*.png`：托盘图标
 - `src/client.rs`：`send` / `send-file` / `send-files` / `send-image` 调试客户端
 
 ## 已验证

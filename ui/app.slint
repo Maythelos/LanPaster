@@ -1,0 +1,170 @@
+import { Button, CheckBox, GroupBox, HorizontalBox, LineEdit, VerticalBox } from "std-widgets.slint";
+
+export struct ConfigForm {
+    device-name: string,
+    psk: string,
+    listen-port: string,
+    poll-ms: string,
+    max-text-kb: string,
+    max-image-mb: string,
+    max-file-mb: string,
+    max-batch-mb: string,
+    max-files: string,
+    max-image-pixels: string,
+    file-sync: bool,
+    mdns-enabled: bool,
+    peers: string,
+}
+
+export component ConfigWindow inherits Window {
+    title: "LanPaster 配置";
+    preferred-width: 660px;
+    preferred-height: 820px;
+
+    in-out property <string> device-name: "";
+    in-out property <string> psk: "";
+    in-out property <string> listen-port: "";
+    in-out property <string> poll-ms: "";
+    in-out property <string> max-text-kb: "";
+    in-out property <string> max-image-mb: "";
+    in-out property <string> max-file-mb: "";
+    in-out property <string> max-batch-mb: "";
+    in-out property <string> max-files: "";
+    in-out property <string> max-image-pixels: "";
+    in-out property <bool> file-sync: true;
+    in-out property <bool> mdns-enabled: true;
+    in-out property <string> peers: "";
+    in-out property <string> status: "";
+
+    callback save(ConfigForm);
+    callback close-window();
+
+    VerticalBox {
+        spacing: 8px;
+
+        Text {
+            text: "LanPaster 配置";
+            font-size: 20px;
+            font-weight: 600;
+        }
+        Text {
+            text: "端口、密钥、阈值和 mDNS 修改后需要重启进程生效。";
+            color: #666666;
+            wrap: word-wrap;
+        }
+
+        GroupBox {
+            title: "身份与网络";
+            VerticalBox {
+                spacing: 6px;
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "设备名称"; width: 140px; }
+                    LineEdit { text <=> root.device-name; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "预共享密钥"; width: 140px; }
+                    LineEdit { text <=> root.psk; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "监听端口"; width: 140px; }
+                    LineEdit { text <=> root.listen-port; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "手动节点"; width: 140px; }
+                    LineEdit {
+                        text <=> root.peers;
+                        placeholder-text: "192.168.1.20:39393, 192.168.1.21:39393";
+                    }
+                }
+                CheckBox {
+                    text: "启用 mDNS 自动发现";
+                    checked <=> root.mdns-enabled;
+                }
+            }
+        }
+
+        GroupBox {
+            title: "剪贴板";
+            VerticalBox {
+                spacing: 6px;
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "轮询间隔 (ms)"; width: 140px; }
+                    LineEdit { text <=> root.poll-ms; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "文本上限 (KB)"; width: 140px; }
+                    LineEdit { text <=> root.max-text-kb; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "图片上限 (MB)"; width: 140px; }
+                    LineEdit { text <=> root.max-image-mb; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "单文件上限 (MB)"; width: 140px; }
+                    LineEdit { text <=> root.max-file-mb; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "单次总量 (MB)"; width: 140px; }
+                    LineEdit { text <=> root.max-batch-mb; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "文件数量上限"; width: 140px; }
+                    LineEdit { text <=> root.max-files; }
+                }
+                HorizontalBox {
+                    spacing: 8px;
+                    Text { text: "图片像素上限"; width: 140px; }
+                    LineEdit { text <=> root.max-image-pixels; }
+                }
+                CheckBox {
+                    text: "同步文件剪贴板";
+                    checked <=> root.file-sync;
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            Button {
+                text: "保存";
+                clicked => {
+                    root.save({
+                        device-name: root.device-name,
+                        psk: root.psk,
+                        listen-port: root.listen-port,
+                        poll-ms: root.poll-ms,
+                        max-text-kb: root.max-text-kb,
+                        max-image-mb: root.max-image-mb,
+                        max-file-mb: root.max-file-mb,
+                        max-batch-mb: root.max-batch-mb,
+                        max-files: root.max-files,
+                        max-image-pixels: root.max-image-pixels,
+                        file-sync: root.file-sync,
+                        mdns-enabled: root.mdns-enabled,
+                        peers: root.peers,
+                    });
+                }
+            }
+            Button {
+                text: "关闭";
+                clicked => { root.close-window(); }
+            }
+            Text {
+                text: root.status;
+                color: #1b7f3a;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

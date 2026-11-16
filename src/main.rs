@@ -5,13 +5,20 @@ mod crypto;
 mod mdns;
 mod net;
 mod protocol;
+mod tray;
+mod ui;
 
 use crate::{
     config::{cache_dir, incoming_dir, Config},
     net::{event_from_local, run_listener, AppContext},
 };
 use anyhow::{Context, Result};
-use std::{env, path::PathBuf, sync::Arc};
+use std::{
+    env,
+    path::PathBuf,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -20,7 +27,8 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("run");
     match command {
-        "run" => run(),
+        "run" => run(&args),
+        "ui" => run_config_ui(),
         "send" => send(&args),
         "send-file" => send_file(&args),
         "send-files" => send_files(&args),
@@ -88,9 +96,16 @@ fn send_image(args: &[String]) -> Result<()> {
     runtime.block_on(client::send_image(&cfg, addr, std::path::Path::new(path)))
 }
 
+fn run_config_ui() -> Result<()> {
+    let (cfg, path) = load_config()?;
+    cfg.validate()?;
+    init_logging(&cfg.log_level);
+    ui::run_config_window(cfg, path)
+}
+
 fn print_help() {
     println!(
-        "LanPaster {}\n\nUSAGE:\n    lanpaster [run]\n    lanpaster init\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
+        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -121,8 +136,7 @@ fn print_config() -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn run() -> Result<()> {
+fn run(args: &[String]) -> Result<()> {
     let (cfg, path) = load_config()?;
     cfg.validate()?;
     init_logging(&cfg.log_level);
@@ -141,6 +155,33 @@ async fn run() -> Result<()> {
     let _ = std::fs::remove_dir_all(&incoming);
     std::fs::create_dir_all(&incoming)?;
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+    let app = runtime.block_on(start_services(cfg.clone()))?;
+
+    let headless = args.iter().any(|a| a == "--headless")
+        || env::var_os("LANPASTER_HEADLESS").is_some();
+    if headless {
+        info!("headless mode; press Ctrl-C to quit");
+        runtime.block_on(async { tokio::signal::ctrl_c().await })?;
+    } else {
+        match tray::run_tray(app.clone(), runtime.handle().clone()) {
+            Ok(()) => {}
+            Err(err) => {
+                error!("tray UI failed: {err:#}; falling back to headless mode");
+                runtime.block_on(async { tokio::signal::ctrl_c().await })?;
+            }
+        }
+    }
+
+    info!("shutting down");
+    runtime.shutdown_timeout(Duration::from_secs(2));
+    Ok(())
+}
+
+async fn start_services(cfg: Config) -> Result<Arc<AppContext>> {
     let (local_tx, mut local_rx) = tokio_mpsc::unbounded_channel();
     let clipboard_cmd = clipboard::spawn(cfg.clone(), local_tx)
         .map_err(|e| anyhow::anyhow!("clipboard thread: {e}"))?;
@@ -161,25 +202,26 @@ async fn run() -> Result<()> {
         }
     });
 
+    let event_app = app.clone();
+    let event_cfg = cfg.clone();
     tokio::spawn(async move {
         while let Some(local) = local_rx.recv().await {
-            let event = event_from_local(&cfg, local);
+            let event = event_from_local(&event_cfg, local);
+            if !event_app.sync_enabled.load(Ordering::Relaxed) {
+                info!("sync disabled; dropping local clipboard event");
+                continue;
+            }
             info!(
                 "local clipboard event: {:?}, {} bytes, {} item(s)",
                 event.kind,
                 event.total_size,
                 event.items.len()
             );
-            app.peers.broadcast(Arc::new(event)).await;
+            event_app.peers.broadcast(Arc::new(event)).await;
         }
     });
 
-    info!("LanPaster is running. Press Ctrl-C to quit.");
-    tokio::signal::ctrl_c()
-        .await
-        .context("wait for ctrl-c")?;
-    info!("shutting down");
-    Ok(())
+    Ok(app)
 }
 
 fn init_logging(level: &str) {

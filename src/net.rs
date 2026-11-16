@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -156,6 +156,7 @@ pub struct AppContext {
     pub clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
     pub seen: Arc<Mutex<SeenEvents>>,
     pub dialed: Arc<Mutex<HashSet<String>>>,
+    pub sync_enabled: Arc<AtomicBool>,
     conn_seq: AtomicU64,
 }
 
@@ -172,6 +173,7 @@ impl AppContext {
             clipboard_cmd,
             seen: Arc::new(Mutex::new(SeenEvents::new())),
             dialed: Arc::new(Mutex::new(HashSet::new())),
+            sync_enabled: Arc::new(AtomicBool::new(true)),
             conn_seq: AtomicU64::new(1),
         })
     }
@@ -636,6 +638,15 @@ async fn handle_message(
                     .send(Message::Reject {
                         id,
                         reason: "origin mismatch".to_string(),
+                    })
+                    .await;
+                return Ok(());
+            }
+            if !app.sync_enabled.load(Ordering::Relaxed) {
+                let _ = tx
+                    .send(Message::Reject {
+                        id,
+                        reason: "sync disabled".to_string(),
                     })
                     .await;
                 return Ok(());

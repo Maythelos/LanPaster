@@ -56,6 +56,8 @@ pub enum ClipboardCommand {
         payload: RemoteClipboard,
         respond: oneshot::Sender<Result<()>>,
     },
+    /// Re-read the local clipboard and emit it as a local event.
+    Push,
 }
 
 pub fn spawn(
@@ -86,20 +88,18 @@ fn run(
     let mut last_image_mime: Option<String> = None;
 
     loop {
-        while let Ok(ClipboardCommand::Write { payload, respond }) = commands.try_recv() {
-            let image_mime = match &payload {
-                RemoteClipboard::Image { mime, .. } => Some(mime.clone()),
-                _ => None,
-            };
-            let result = write_remote(&ctx, &payload);
-            if result.is_ok() {
-                if let Some(mime) = image_mime {
-                    last_image_mime = Some(mime);
-                }
-                last_fp = None;
-                suppress_next = true;
+        while let Ok(cmd) = commands.try_recv() {
+            if !apply_command(
+                &ctx,
+                &config,
+                &events,
+                &mut last_fp,
+                &mut suppress_next,
+                &mut last_image_mime,
+                cmd,
+            ) {
+                return Ok(());
             }
-            let _ = respond.send(result);
         }
 
         match read_local(&ctx, &config, last_image_mime.as_deref()) {
@@ -123,26 +123,66 @@ fn run(
         }
 
         match commands.recv_timeout(poll) {
-            Ok(ClipboardCommand::Write { payload, respond }) => {
-                let image_mime = match &payload {
-                    RemoteClipboard::Image { mime, .. } => Some(mime.clone()),
-                    _ => None,
-                };
-                let result = write_remote(&ctx, &payload);
-                if result.is_ok() {
-                    if let Some(mime) = image_mime {
-                        last_image_mime = Some(mime);
-                    }
-                    last_fp = None;
-                    suppress_next = true;
+            Ok(cmd) => {
+                if !apply_command(
+                    &ctx,
+                    &config,
+                    &events,
+                    &mut last_fp,
+                    &mut suppress_next,
+                    &mut last_image_mime,
+                    cmd,
+                ) {
+                    break;
                 }
-                let _ = respond.send(result);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     Ok(())
+}
+
+fn apply_command(
+    ctx: &ClipboardContext,
+    config: &Config,
+    events: &tokio_mpsc::UnboundedSender<LocalClipboard>,
+    last_fp: &mut Option<Vec<u8>>,
+    suppress_next: &mut bool,
+    last_image_mime: &mut Option<String>,
+    command: ClipboardCommand,
+) -> bool {
+    match command {
+        ClipboardCommand::Write { payload, respond } => {
+            let image_mime = match &payload {
+                RemoteClipboard::Image { mime, .. } => Some(mime.clone()),
+                _ => None,
+            };
+            let result = write_remote(ctx, &payload);
+            if result.is_ok() {
+                if let Some(mime) = image_mime {
+                    *last_image_mime = Some(mime);
+                }
+                *last_fp = None;
+                *suppress_next = true;
+            }
+            let _ = respond.send(result);
+            true
+        }
+        ClipboardCommand::Push => {
+            if let Some(local) = read_local(ctx, config, last_image_mime.as_deref()) {
+                if let LocalClipboard::Image { mime, .. } = &local {
+                    *last_image_mime = Some(mime.clone());
+                }
+                *last_fp = Some(fingerprint_local(&local));
+                *suppress_next = false;
+                if events.send(local).is_err() {
+                    return false;
+                }
+            }
+            true
+        }
+    }
 }
 
 fn read_local(ctx: &ClipboardContext, config: &Config, last_image_mime: Option<&str>) -> Option<LocalClipboard> {
@@ -309,29 +349,56 @@ fn read_text(ctx: &ClipboardContext, config: &Config) -> Option<LocalClipboard> 
 
 fn write_remote(ctx: &ClipboardContext, payload: &RemoteClipboard) -> Result<()> {
     match payload {
-        RemoteClipboard::Text(text) => {
-            ctx.set_text(text.clone())
-                .map_err(|e| anyhow::anyhow!("set clipboard text: {e}"))?;
-        }
+        RemoteClipboard::Text(text) => retry_clipboard(
+            || ctx.set_text(text.clone()),
+            "set clipboard text",
+        ),
         RemoteClipboard::Image { mime, bytes } => {
             let format = platform_image_format(mime);
-            if ctx.set_buffer(format, bytes.clone()).is_err() {
-                let image = RustImageData::from_bytes(bytes)
-                    .map_err(|e| anyhow::anyhow!("decode image fallback: {e}"))?;
-                ctx.set_image(image)
-                    .map_err(|e| anyhow::anyhow!("set clipboard image: {e}"))?;
+            let mut last_err = String::new();
+            for _ in 0..3 {
+                match ctx.set_buffer(format, bytes.clone()) {
+                    Ok(()) => return Ok(()),
+                    Err(err) => last_err = err.to_string(),
+                }
+                match RustImageData::from_bytes(bytes) {
+                    Ok(image) => match ctx.set_image(image) {
+                        Ok(()) => return Ok(()),
+                        Err(err) => last_err = err.to_string(),
+                    },
+                    Err(err) => {
+                        if last_err.is_empty() {
+                            last_err = err.to_string();
+                        }
+                    }
+                }
+                thread::sleep(Duration::from_millis(60));
             }
+            Err(anyhow::anyhow!("set clipboard image: {last_err}"))
         }
         RemoteClipboard::Files(paths) => {
             let files: Vec<String> = paths
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
                 .collect();
-            ctx.set_files(files)
-                .map_err(|e| anyhow::anyhow!("set clipboard files: {e}"))?;
+            retry_clipboard(|| ctx.set_files(files.clone()), "set clipboard files")
         }
     }
-    Ok(())
+}
+
+fn retry_clipboard<F>(mut f: F, what: &str) -> Result<()>
+where
+    F: FnMut() -> clipboard_rs::common::Result<()>,
+{
+    let mut last_err = String::new();
+    for _ in 0..3 {
+        match f() {
+            Ok(()) => return Ok(()),
+            Err(err) => last_err = err.to_string(),
+        }
+        thread::sleep(Duration::from_millis(60));
+    }
+    Err(anyhow::anyhow!("{what}: {last_err}"))
 }
 
 fn fingerprint_local(local: &LocalClipboard) -> Vec<u8> {

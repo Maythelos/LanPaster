@@ -93,9 +93,9 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 - **心跳保活：**设备定时发送心跳，超时标记离线并自动重连。
 
-- **加密与校验：**握手阶段校验预共享密钥，密钥不一致直接拒绝连接；传输载荷采用 AES\-256\-GCM 加密。
+- **加密与校验：**使用 Noise `XXpsk3` 握手（PSK 双向认证、前向保密、防重放），传输载荷经 ChaCha20\-Poly1305 加密；密钥不一致直接拒绝连接。
 
-### 配置面板（独立弹窗，按需打开）
+### 配置面板（独立进程，按需打开）
 
 所有输入表单与复杂配置不在托盘菜单内，统一在配置面板完成。可配置项如下：
 
@@ -148,7 +148,7 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 |维度|要求|
 |---|---|
-|资源占用|空闲状态内存控制在 20MB 以内，闲置 CPU 接近 0；文件传输采用流式分块，不把整文件读入内存。|
+|资源占用|无界面模式空闲内存约 20MB、闲置 CPU 接近 0；原生托盘模式在 macOS 约 80MB（AppKit / NSStatusItem 基线），配置面板独立进程按需启动、关闭即退出；文件传输采用流式分块，不把整文件读入内存。|
 |稳定性|支持 7×24 小时后台常驻，无内存泄漏、无 GC 抖动。|
 |交互体验|托盘菜单为系统原生菜单，与平台原生 App 表现一致；大文件传输有状态 / 进度提示，可取消。|
 |兼容性|macOS 13\+、Windows 10\+、主流 Linux 桌面（X11 / KDE Wayland；GNOME Wayland 仅 XWayland 或扩展场景）。|
@@ -188,6 +188,8 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 - **Linux 剪贴板：**GNOME Wayland 不实现 data-control，后台监听只能依赖 XWayland 桥接或 GNOME Shell 扩展；KDE Wayland 可用。
 
+- **内存目标：**macOS 原生托盘（NSStatusItem / AppKit）单进程实测约 80MB，原 20MB 目标只适用于无界面模式；配置面板进程约 125MB，但仅在打开期间存在。
+
 ## 二期规划（扩展）
 
 - 剪贴历史面板。
@@ -210,20 +212,20 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 - **跨平台：**覆盖 macOS（arm64 / x86）、Windows x64、Linux x64。
 
-- **通信：**TCP P2P \+ mDNS 自动发现，AES 加密。
+- **通信：**TCP P2P \+ mDNS 自动发现，Noise PSK 加密；文件分块传输。
 
 ## 核心技术栈总览
 
 |职责|选型|说明|
 |---|---|---|
 |编程语言 / 异步运行时|Rust \+ Tokio|无 GC，统一调度剪贴轮询、mDNS 扫描、TCP 服务与音频任务。|
-|托盘与菜单|tray\-icon \+ muda|各平台原生托盘 API，支持动态图标、动态菜单与 Tooltip。|
+|托盘与菜单|tray\-icon \+ muda \+ winit|各平台原生托盘 API，winit 提供主线程事件循环；支持动态图标、动态菜单、设备子菜单与 Tooltip。|
 |剪贴板读写|clipboard\-rs \+ 平台格式映射|支持文本、原始图片格式、文件列表与变更监听；arboard 作为备选（其图片 API 只返回解码后的 RGBA）。|
 |局域网发现|mdns\-sd|维护活跃、无异步运行时依赖，支持多网卡与 IPv4/IPv6；替代 2021 年后停更的 `mdns`。|
-|传输与加密|原生 TCP \+ aes\-gcm|点对点长连接与心跳；控制消息用 bincode，载荷 AES\-256\-GCM 加密，每包独立 nonce。|
+|传输与加密|原生 TCP \+ Noise（snow）|点对点长连接与心跳；Noise `XXpsk3` 握手提供双向认证、前向保密与防重放；文件分块走同一加密流。|
 |文件传输|分块流式传输|清单协商 \+ 256KB–1MB 分块 \+ SHA\-256 校验；不整文件入内存。|
 |音频提醒|rodio|纯 Rust 跨平台音频库，不依赖系统命令调用。|
-|配置面板 UI|Slint|轻量声明式 UI，编译为机器码，按需创建窗口、关闭后销毁。|
+|配置面板 UI|Slint|轻量声明式 UI，编译为机器码；作为独立进程按需拉起，关闭后进程退出，不常驻。|
 |序列化与持久化|bincode / toml / dirs|bincode 用于传输，toml 存配置，dirs 定位系统标准配置目录。|
 |日志|tracing|结构化日志与轮转。|
 
@@ -233,9 +235,9 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 统一调度剪贴轮询、mDNS 扫描、TCP 服务与音频任务；异步模型适合 IO 密集型后台工具。Rust 无 GC，长期后台运行无内存毛刺。
 
-### 托盘：tray\-icon \+ muda
+### 托盘：tray\-icon \+ muda \+ winit
 
-底层调用各平台原生托盘 API：macOS NSStatusItem、Windows Shell\_NotifyIconW、Linux StatusNotifierItem；菜单为系统原生菜单，支持动态切换图标、动态重建菜单与更新 Tooltip，满足托盘交互需求。
+底层调用各平台原生托盘 API：macOS NSStatusItem、Windows Shell\_NotifyIconW、Linux StatusNotifierItem；winit 提供主线程事件循环，菜单事件通过 EventLoopProxy 回到主线程。macOS 使用 Accessory 激活策略隐藏 Dock 图标，Linux 使用 KSNI 后端避免 GTK 依赖。菜单支持动态图标、设备子菜单、勾选项与 Tooltip。
 
 ### 剪贴板：clipboard-rs + 平台格式映射
 
@@ -247,7 +249,7 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 ### 传输层：原生 TCP
 
-点对点 TCP 长连接，自带心跳保活；控制消息采用 bincode 序列化，文件按块流式发送；两者均经 AES\-256\-GCM 加密，每个包使用独立 nonce。
+点对点 TCP 长连接，自带心跳保活；控制消息采用 bincode 序列化，文件按块流式发送；两者均经 Noise（ChaCha20\-Poly1305）加密，由 Noise 传输状态维护 nonce 与重放保护。
 
 ### 文件传输与落地
 
@@ -259,9 +261,9 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 ### 配置面板 UI：Slint
 
-轻量声明式 UI，编译为原生机器码，运行时开销极小；仅在用户打开配置面板时创建窗口，关闭后销毁，不常驻占用资源；自绘控件，兼顾跨平台一致性，且不引入 WebView。
+轻量声明式 UI，编译为原生机器码；配置面板作为独立进程按需拉起（`lanpaster ui`），关闭窗口即退出进程，不常驻占用资源；自绘控件，兼顾跨平台一致性，且不引入 WebView。
 
-不选用 Tauri：Tauri 附带 WebView，会增加常驻开销，违背低占用目标；不选用 egui：闲置渲染循环功耗高于 Slint。
+不选用 Tauri：Tauri 附带 WebView，会增加常驻开销，违背低占用目标；不选用在常驻进程内嵌 Slint 托盘：macOS 原生托盘（AppKit）本身约 80MB，Slint 再增加 UI 运行时开销，因此托盘用 tray-icon，配置窗用独立 Slint 进程。
 
 ### 配置持久化：toml \+ dirs
 
