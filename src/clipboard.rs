@@ -1,0 +1,430 @@
+use crate::config::Config;
+use anyhow::Result;
+use clipboard_rs::{common::RustImage, Clipboard, ClipboardContext, ContentFormat, RustImageData};
+use sha2::{Digest, Sha256};
+use std::{
+    io::Cursor,
+    path::PathBuf,
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
+use tokio::sync::{mpsc as tokio_mpsc, oneshot};
+use tracing::{debug, warn};
+
+#[derive(Debug, Clone)]
+pub struct LocalFileMeta {
+    pub name: String,
+    pub path: PathBuf,
+    pub size: u64,
+    pub mtime: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LocalClipboard {
+    Text {
+        text: String,
+        bytes: Vec<u8>,
+        hash: Vec<u8>,
+    },
+    Image {
+        mime: String,
+        bytes: Vec<u8>,
+        width: Option<u32>,
+        height: Option<u32>,
+        hash: Vec<u8>,
+    },
+    Files {
+        metas: Vec<LocalFileMeta>,
+        total_size: u64,
+        fingerprint: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum RemoteClipboard {
+    Text(String),
+    Image {
+        mime: String,
+        bytes: Vec<u8>,
+    },
+    Files(Vec<PathBuf>),
+}
+
+pub enum ClipboardCommand {
+    Write {
+        payload: RemoteClipboard,
+        respond: oneshot::Sender<Result<()>>,
+    },
+}
+
+pub fn spawn(
+    config: Config,
+    events: tokio_mpsc::UnboundedSender<LocalClipboard>,
+) -> std::result::Result<std::sync::mpsc::Sender<ClipboardCommand>, String> {
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("lanpaster-clipboard".to_string())
+        .spawn(move || {
+            if let Err(err) = run(config, events, cmd_rx) {
+                warn!("clipboard thread stopped: {err:#}");
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(cmd_tx)
+}
+
+fn run(
+    config: Config,
+    events: tokio_mpsc::UnboundedSender<LocalClipboard>,
+    commands: mpsc::Receiver<ClipboardCommand>,
+) -> Result<()> {
+    let ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!("open clipboard: {e}"))?;
+    let poll = Duration::from_millis(config.poll_interval_ms.clamp(100, 5000));
+    let mut last_fp: Option<Vec<u8>> = None;
+    let mut suppress_next = false;
+    let mut last_image_mime: Option<String> = None;
+
+    loop {
+        while let Ok(ClipboardCommand::Write { payload, respond }) = commands.try_recv() {
+            let image_mime = match &payload {
+                RemoteClipboard::Image { mime, .. } => Some(mime.clone()),
+                _ => None,
+            };
+            let result = write_remote(&ctx, &payload);
+            if result.is_ok() {
+                if let Some(mime) = image_mime {
+                    last_image_mime = Some(mime);
+                }
+                last_fp = None;
+                suppress_next = true;
+            }
+            let _ = respond.send(result);
+        }
+
+        match read_local(&ctx, &config, last_image_mime.as_deref()) {
+            Some(local) => {
+                let fp = fingerprint_local(&local);
+                if suppress_next {
+                    suppress_next = false;
+                    last_fp = Some(fp);
+                    debug!("suppressed clipboard poll after remote write");
+                } else if last_fp.as_ref() != Some(&fp) {
+                    last_fp = Some(fp);
+                    if events.send(local).is_err() {
+                        break;
+                    }
+                }
+            }
+            None => {
+                last_fp = None;
+                suppress_next = false;
+            }
+        }
+
+        match commands.recv_timeout(poll) {
+            Ok(ClipboardCommand::Write { payload, respond }) => {
+                let image_mime = match &payload {
+                    RemoteClipboard::Image { mime, .. } => Some(mime.clone()),
+                    _ => None,
+                };
+                let result = write_remote(&ctx, &payload);
+                if result.is_ok() {
+                    if let Some(mime) = image_mime {
+                        last_image_mime = Some(mime);
+                    }
+                    last_fp = None;
+                    suppress_next = true;
+                }
+                let _ = respond.send(result);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+fn read_local(ctx: &ClipboardContext, config: &Config, last_image_mime: Option<&str>) -> Option<LocalClipboard> {
+    if ctx.has(ContentFormat::Files) {
+        if !config.file_sync {
+            debug!("file sync disabled; ignoring file clipboard");
+            return None;
+        }
+        if let Some(files) = read_files(ctx, config) {
+            return Some(files);
+        }
+    }
+    if let Some(image) = read_image(ctx, config, last_image_mime) {
+        return Some(image);
+    }
+    read_text(ctx, config)
+}
+
+fn read_files(ctx: &ClipboardContext, config: &Config) -> Option<LocalClipboard> {
+    if !ctx.has(ContentFormat::Files) {
+        return None;
+    }
+    let files = ctx.get_files().ok()?;
+    if files.is_empty() {
+        return None;
+    }
+    if files.len() > config.max_files {
+        debug!("skip clipboard files: {} files exceeds limit {}", files.len(), config.max_files);
+        return None;
+    }
+
+    let mut metas = Vec::with_capacity(files.len());
+    let mut total = 0u64;
+    for raw in files {
+        let path = PathBuf::from(raw);
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(err) => {
+                debug!("skip file {}: {err}", path.display());
+                return None;
+            }
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            debug!("skip clipboard files: only regular files are supported ({})", path.display());
+            return None;
+        }
+        if meta.len() > config.max_file_bytes() {
+            debug!(
+                "skip clipboard files: {} is {} bytes, over per-file limit",
+                path.display(),
+                meta.len()
+            );
+            return None;
+        }
+        total = total.saturating_add(meta.len());
+        if total > config.max_batch_bytes() {
+            debug!("skip clipboard files: total size exceeds batch limit");
+            return None;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        metas.push(LocalFileMeta {
+            name,
+            path,
+            size: meta.len(),
+            mtime,
+        });
+    }
+
+    let fingerprint = fingerprint_files(&metas);
+    Some(LocalClipboard::Files {
+        metas,
+        total_size: total,
+        fingerprint,
+    })
+}
+
+fn read_image(
+    ctx: &ClipboardContext,
+    config: &Config,
+    preferred_mime: Option<&str>,
+) -> Option<LocalClipboard> {
+    if !ctx.has(ContentFormat::Image) {
+        return None;
+    }
+
+    if let Ok(formats) = ctx.available_formats() {
+        let preferred = preferred_mime.and_then(|mime| {
+            let source = platform_image_format(mime);
+            formats
+                .iter()
+                .find(|f| f.eq_ignore_ascii_case(source))
+                .map(|f| (f.clone(), mime.to_string()))
+        });
+        let chosen = preferred.or_else(|| find_image_format(&formats));
+        if let Some((source_format, mime)) = chosen {
+            if let Ok(bytes) = ctx.get_buffer(&source_format) {
+                if !bytes.is_empty() && bytes.len() as u64 <= config.max_image_bytes() {
+                    let (width, height) = image_dimensions(&bytes);
+                    if let Some((w, h)) = width.zip(height) {
+                        if (w as u64).saturating_mul(h as u64) > config.max_image_pixels {
+                            debug!("skip image: {}x{} exceeds pixel limit", w, h);
+                            return None;
+                        }
+                    }
+                    let hash = sha256_prefixed(b"image", &bytes);
+                    return Some(LocalClipboard::Image {
+                        mime,
+                        bytes,
+                        width,
+                        height,
+                        hash,
+                    });
+                }
+            }
+        }
+    }
+
+    let data = ctx.get_image().ok()?;
+    let dynamic = data.get_dynamic_image().ok()?;
+    let (width, height) = (dynamic.width(), dynamic.height());
+    if (width as u64).saturating_mul(height as u64) > config.max_image_pixels {
+        debug!("skip image: {width}x{height} exceeds pixel limit");
+        return None;
+    }
+    let mut png = Vec::new();
+    dynamic
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    if png.len() as u64 > config.max_image_bytes() {
+        debug!("skip image: encoded PNG exceeds image limit");
+        return None;
+    }
+    let hash = sha256_prefixed(b"image", &png);
+    Some(LocalClipboard::Image {
+        mime: "image/png".to_string(),
+        bytes: png,
+        width: Some(width),
+        height: Some(height),
+        hash,
+    })
+}
+
+fn read_text(ctx: &ClipboardContext, config: &Config) -> Option<LocalClipboard> {
+    let text = ctx.get_text().ok()?;
+    if text.is_empty() {
+        return None;
+    }
+    let bytes = text.as_bytes().to_vec();
+    if bytes.len() as u64 > config.max_text_bytes() {
+        debug!("skip text: {} bytes exceeds text limit", bytes.len());
+        return None;
+    }
+    let hash = sha256_prefixed(b"text", &bytes);
+    Some(LocalClipboard::Text { text, bytes, hash })
+}
+
+fn write_remote(ctx: &ClipboardContext, payload: &RemoteClipboard) -> Result<()> {
+    match payload {
+        RemoteClipboard::Text(text) => {
+            ctx.set_text(text.clone())
+                .map_err(|e| anyhow::anyhow!("set clipboard text: {e}"))?;
+        }
+        RemoteClipboard::Image { mime, bytes } => {
+            let format = platform_image_format(mime);
+            if ctx.set_buffer(format, bytes.clone()).is_err() {
+                let image = RustImageData::from_bytes(bytes)
+                    .map_err(|e| anyhow::anyhow!("decode image fallback: {e}"))?;
+                ctx.set_image(image)
+                    .map_err(|e| anyhow::anyhow!("set clipboard image: {e}"))?;
+            }
+        }
+        RemoteClipboard::Files(paths) => {
+            let files: Vec<String> = paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            ctx.set_files(files)
+                .map_err(|e| anyhow::anyhow!("set clipboard files: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn fingerprint_local(local: &LocalClipboard) -> Vec<u8> {
+    match local {
+        LocalClipboard::Text { hash, .. } | LocalClipboard::Image { hash, .. } => hash.clone(),
+        LocalClipboard::Files { fingerprint, .. } => fingerprint.clone(),
+    }
+}
+
+fn fingerprint_files(metas: &[LocalFileMeta]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"files");
+    for meta in metas {
+        hasher.update(meta.name.as_bytes());
+        hasher.update(meta.size.to_le_bytes());
+        hasher.update(meta.mtime.unwrap_or_default().to_le_bytes());
+    }
+    hasher.finalize().to_vec()
+}
+
+fn sha256_prefixed(prefix: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(prefix);
+    hasher.update(data);
+    hasher.finalize().to_vec()
+}
+
+fn image_dimensions(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
+    match image::load_from_memory(bytes) {
+        Ok(img) => (Some(img.width()), Some(img.height())),
+        Err(_) => (None, None),
+    }
+}
+
+fn find_image_format(formats: &[String]) -> Option<(String, String)> {
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("public.png", "image/png"),
+        ("PNG", "image/png"),
+        ("image/png", "image/png"),
+        ("public.jpeg", "image/jpeg"),
+        ("public.jpg", "image/jpeg"),
+        ("JFIF", "image/jpeg"),
+        ("JPEG", "image/jpeg"),
+        ("image/jpeg", "image/jpeg"),
+        ("org.webmproject.webp", "image/webp"),
+        ("public.webp", "image/webp"),
+        ("WEBP", "image/webp"),
+        ("image/webp", "image/webp"),
+        ("com.compuserve.gif", "image/gif"),
+        ("GIF", "image/gif"),
+        ("image/gif", "image/gif"),
+        ("public.heic", "image/heic"),
+        ("HEIC", "image/heic"),
+        ("image/heic", "image/heic"),
+        ("public.tiff", "image/tiff"),
+        ("TIFF", "image/tiff"),
+        ("image/tiff", "image/tiff"),
+    ];
+    for (source, mime) in CANDIDATES {
+        if formats.iter().any(|f| f.eq_ignore_ascii_case(source)) {
+            return Some((source.to_string(), mime.to_string()));
+        }
+    }
+    None
+}
+
+fn platform_image_format(mime: &str) -> &str {
+    #[cfg(target_os = "macos")]
+    {
+        match mime {
+            "image/png" => "public.png",
+            "image/jpeg" => "public.jpeg",
+            "image/tiff" => "public.tiff",
+            "image/heic" => "public.heic",
+            "image/gif" => "com.compuserve.gif",
+            "image/webp" => "org.webmproject.webp",
+            _ => mime,
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        match mime {
+            "image/png" => "PNG",
+            "image/jpeg" => "JFIF",
+            "image/tiff" => "TIFF",
+            "image/heic" => "HEIC",
+            "image/gif" => "GIF",
+            "image/webp" => "WEBP",
+            _ => mime,
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        mime
+    }
+}

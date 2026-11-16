@@ -1,0 +1,32 @@
+[package]
+name = "lanpaster"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "LAN clipboard sync tool"
+license = "GPL-3.0-only"
+
+[dependencies]
+anyhow = "1"
+bincode = { version = "2", features = ["derive"] }
+clipboard-rs = { version = "0.3.5", features = ["image"] }
+dirs = "6"
+getrandom = "0.2"
+hex = "0.4"
+hostname = "0.4"
+mdns-sd = "0.21"
+if-addrs = "0.15"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+snow = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "fs", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
