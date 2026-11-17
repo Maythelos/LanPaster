@@ -455,7 +455,7 @@ export component SettingsWindow inherits Window {
                         Separator {}
                         StackRow {
                             label: "设备指纹";
-                            hint: "首次连接时请核对对方设备上的指纹";
+                            hint: "首次连接时核对指纹；对方在菜单栏“连接请求”里同意";
                             TextField { text <=> root.fingerprint; read-only: true; }
                         }
                         Separator {}
