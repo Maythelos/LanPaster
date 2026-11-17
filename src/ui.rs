@@ -36,9 +36,9 @@ fn run_connection_window(config: Config, config_path: PathBuf) -> Result<()> {
     window.set_listen_port(config.listen_port.to_string().into());
     window.set_mdns_enabled(config.mdns_enabled);
     window.set_peers(config.peers.join(", ").into());
-    window.set_status(
-        "端口/PSK/mDNS/手动节点需要重启；设备名保存后对新连接生效。".into(),
-    );
+    window.set_status("".into());
+    window.set_status_error(false);
+    window.set_status_success(false);
 
     {
         let window_weak = window.as_weak();
@@ -62,10 +62,18 @@ fn run_connection_window(config: Config, config_path: PathBuf) -> Result<()> {
             let result = save_connection(&path, &base, &form);
             if let Some(window) = window_weak.upgrade() {
                 match result {
-                    Ok(()) => window.set_status(
-                        "已保存；端口/PSK/mDNS/节点需重启，设备名已热加载".into(),
-                    ),
-                    Err(err) => window.set_status(format!("保存失败：{err:#}").into()),
+                    Ok(()) => {
+                        window.set_status_error(false);
+                        window.set_status_success(true);
+                        window.set_status(
+                            "已保存；端口/PSK/mDNS/节点需重启，设备名已热加载".into(),
+                        );
+                    }
+                    Err(err) => {
+                        window.set_status_error(true);
+                        window.set_status_success(false);
+                        window.set_status(format!("保存失败：{err:#}").into());
+                    }
                 }
             }
         });
@@ -87,7 +95,9 @@ fn run_local_window(config: Config, config_path: PathBuf) -> Result<()> {
     window.set_max_files(config.max_files.to_string().into());
     window.set_file_sync(config.file_sync);
     window.set_sound_enabled(config.sound_enabled);
-    window.set_status("本地设置保存后自动热加载。".into());
+    window.set_status("".into());
+    window.set_status_error(false);
+    window.set_status_success(false);
 
     {
         let window_weak = window.as_weak();
@@ -111,8 +121,16 @@ fn run_local_window(config: Config, config_path: PathBuf) -> Result<()> {
             let result = save_local(&path, &base, &form);
             if let Some(window) = window_weak.upgrade() {
                 match result {
-                    Ok(()) => window.set_status("已保存并热加载".into()),
-                    Err(err) => window.set_status(format!("保存失败：{err:#}").into()),
+                    Ok(()) => {
+                        window.set_status_error(false);
+                        window.set_status_success(true);
+                        window.set_status("已保存并热加载".into());
+                    }
+                    Err(err) => {
+                        window.set_status_error(true);
+                        window.set_status_success(false);
+                        window.set_status(format!("保存失败：{err:#}").into());
+                    }
                 }
             }
         });
