@@ -1,6 +1,12 @@
 use anyhow::{Context, Result};
-use std::{fs, path::PathBuf, process::Stdio};
-use tracing::{info, warn};
+use std::fs;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
+use tracing::info;
+#[cfg(target_os = "macos")]
+use tracing::warn;
 
 #[cfg(target_os = "macos")]
 pub fn is_enabled() -> bool {

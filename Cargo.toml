@@ -25,7 +25,7 @@ sha2 = "0.10"
 slint = { version = "1.19", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
 snow = "0.9"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "fs", "signal"] }
-tray-icon = { version = "0.26", features = ["ksni"] }
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 winit = "0.30"
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.8"
