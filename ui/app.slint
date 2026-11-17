@@ -1,4 +1,4 @@
-import { Button, HorizontalBox, LineEdit, Palette, Switch, VerticalBox } from "std-widgets.slint";
+import { Button, HorizontalBox, Palette, Switch, VerticalBox } from "std-widgets.slint";
 
 global Theme {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
@@ -13,6 +13,10 @@ global Theme {
     out property <color> hover: dark ? #303032 : #e4e4e7;
     out property <color> error: #ff3b30;
     out property <color> success: #28cd41;
+    out property <color> accent: dark ? #0a84ff : #007aff;
+    out property <color> field-bg: dark ? #1c1c1e : #f2f2f7;
+    out property <color> field-focus-bg: dark ? #2c2c2e : #ffffff;
+    out property <color> field-border: dark ? #3a3a3c : transparent;
 }
 
 component Separator inherits Rectangle {
@@ -59,10 +63,67 @@ component Section inherits VerticalBox {
     }
 }
 
+component TextField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> password: false;
+    in-out property <bool> reveal: false;
+
+    height: 30px;
+    border-radius: 7px;
+    background: input.has-focus ? Theme.field-focus-bg : Theme.field-bg;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.field-border;
+    clip: true;
+    animate background, border-color { duration: 120ms; }
+
+    input := TextInput {
+        x: 11px;
+        width: root.width - (root.password ? 48px : 22px);
+        height: parent.height;
+        text <=> root.text;
+        single-line: true;
+        font-size: 13px;
+        color: Theme.text;
+        vertical-alignment: center;
+        input-type: root.password && !root.reveal ? InputType.password : InputType.text;
+    }
+
+    if root.text == "" && !input.has-focus : Text {
+        x: 12px;
+        y: 0;
+        width: parent.width - 24px;
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.placeholder;
+        font-size: 13px;
+        color: Theme.secondary;
+        overflow: clip;
+    }
+
+    if root.password : Image {
+        x: root.width - 32px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: root.reveal ? @image-url("../assets/eye-off.png") : @image-url("../assets/eye.png");
+        colorize: Theme.secondary;
+    }
+
+    if root.password : TouchArea {
+        x: root.width - 38px;
+        y: 0;
+        width: 34px;
+        height: parent.height;
+        mouse-cursor: pointer;
+        clicked => { root.reveal = !root.reveal; }
+    }
+}
+
 component SettingRow inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
-    height: 46px;
+    height: 42px;
     background: transparent;
     horizontal-stretch: 1;
 
@@ -73,7 +134,7 @@ component SettingRow inherits Rectangle {
         cross-axis-alignment: center;
 
         VerticalBox {
-            width: 200px;
+            width: 170px;
             spacing: 2px;
             alignment: center;
 
@@ -93,7 +154,7 @@ component SettingRow inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
 
         HorizontalBox {
-            width: 260px;
+            width: 210px;
             cross-axis-alignment: center;
             @children
         }
@@ -104,7 +165,7 @@ component ToggleRow inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
     in-out property <bool> checked;
-    height: 46px;
+    height: 42px;
     background: transparent;
     horizontal-stretch: 1;
 
@@ -115,7 +176,7 @@ component ToggleRow inherits Rectangle {
         cross-axis-alignment: center;
 
         VerticalBox {
-            width: 200px;
+            width: 170px;
             spacing: 2px;
             alignment: center;
 
@@ -200,8 +261,8 @@ export struct LocalForm {
 
 export component SettingsWindow inherits Window {
     title: "LanPaster 设置";
-    preferred-width: 860px;
-    preferred-height: 680px;
+    preferred-width: 800px;
+    preferred-height: 580px;
     background: Theme.window-bg;
 
     in-out property <int> panel: 0;
@@ -234,14 +295,14 @@ export component SettingsWindow inherits Window {
 
     HorizontalBox {
         Rectangle {
-            width: 200px;
+            width: 180px;
             background: Theme.sidebar-bg;
 
             VerticalBox {
-                padding-left: 14px;
-                padding-right: 14px;
-                padding-top: 18px;
-                padding-bottom: 18px;
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 16px;
+                padding-bottom: 16px;
                 spacing: 4px;
 
                 Text {
@@ -304,11 +365,11 @@ export component SettingsWindow inherits Window {
             background: Theme.window-bg;
 
             VerticalBox {
-                padding-left: 24px;
-                padding-right: 24px;
-                padding-top: 22px;
-                padding-bottom: 22px;
-                spacing: 18px;
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 18px;
+                padding-bottom: 18px;
+                spacing: 16px;
                 cross-axis-alignment: stretch;
 
                 VerticalBox {
@@ -330,7 +391,7 @@ export component SettingsWindow inherits Window {
 
                 if root.panel == 0 : VerticalBox {
                     width: 100%;
-                    spacing: 18px;
+                    spacing: 16px;
                     vertical-stretch: 0;
                     horizontal-stretch: 1;
                     cross-axis-alignment: stretch;
@@ -340,18 +401,18 @@ export component SettingsWindow inherits Window {
                         horizontal-stretch: 1;
                         SettingRow {
                             label: "设备名称";
-                            LineEdit { height: 26px; text <=> root.device-name; placeholder-text: "例如：MacBook Pro"; }
+                            TextField { text <=> root.device-name; placeholder: "例如：MacBook Pro"; }
                         }
                         Separator {}
                         SettingRow {
                             label: "预共享密钥";
                             hint: "所有设备必须一致";
-                            LineEdit { height: 26px; text <=> root.psk; input-type: InputType.password; placeholder-text: "64 位 hex"; }
+                            TextField { text <=> root.psk; placeholder: "64 位 hex"; password: true; }
                         }
                         Separator {}
                         SettingRow {
                             label: "监听端口";
-                            LineEdit { height: 26px; text <=> root.listen-port; placeholder-text: "39393"; }
+                            TextField { text <=> root.listen-port; placeholder: "39393"; }
                         }
                     }
 
@@ -361,7 +422,7 @@ export component SettingsWindow inherits Window {
                         SettingRow {
                             label: "手动节点";
                             hint: "mDNS 不可用时使用";
-                            LineEdit { height: 26px; text <=> root.peers; placeholder-text: "192.168.1.20:39393, 192.168.1.21:39393"; }
+                            TextField { text <=> root.peers; placeholder: "192.168.1.20:39393, 192.168.1.21:39393"; }
                         }
                         Separator {}
                         ToggleRow {
@@ -381,7 +442,7 @@ export component SettingsWindow inherits Window {
 
                 if root.panel == 1 : VerticalBox {
                     width: 100%;
-                    spacing: 18px;
+                    spacing: 16px;
                     vertical-stretch: 0;
                     horizontal-stretch: 1;
                     cross-axis-alignment: stretch;
@@ -391,29 +452,29 @@ export component SettingsWindow inherits Window {
                         horizontal-stretch: 1;
                         SettingRow {
                             label: "轮询间隔 (ms)";
-                            hint: "平台 watcher 不可用时的兜底频率";
-                            LineEdit { height: 26px; text <=> root.poll-ms; placeholder-text: "500"; }
+                            hint: "watcher 不可用时的兜底频率";
+                            TextField { text <=> root.poll-ms; placeholder: "500"; }
                         }
                         Separator {}
                         SettingRow {
                             label: "文本上限 (KB)";
-                            LineEdit { height: 26px; text <=> root.max-text-kb; placeholder-text: "1024"; }
+                            TextField { text <=> root.max-text-kb; placeholder: "1024"; }
                         }
                         Separator {}
                         SettingRow {
                             label: "单文件 / 图片上限 (MB)";
                             hint: "图片按一个文件项计算";
-                            LineEdit { height: 26px; text <=> root.max-file-mb; placeholder-text: "100"; }
+                            TextField { text <=> root.max-file-mb; placeholder: "100"; }
                         }
                         Separator {}
                         SettingRow {
                             label: "单次总量 (MB)";
-                            LineEdit { height: 26px; text <=> root.max-batch-mb; placeholder-text: "200"; }
+                            TextField { text <=> root.max-batch-mb; placeholder: "200"; }
                         }
                         Separator {}
                         SettingRow {
                             label: "文件数量上限";
-                            LineEdit { height: 26px; text <=> root.max-files; placeholder-text: "50"; }
+                            TextField { text <=> root.max-files; placeholder: "50"; }
                         }
                     }
 
@@ -427,7 +488,7 @@ export component SettingsWindow inherits Window {
                         }
                         Separator {}
                         ToggleRow {
-                            label: "收到远端剪贴时播放提示音";
+                            label: "收到剪贴时播放提示音";
                             checked <=> root.sound-enabled;
                         }
                     }
