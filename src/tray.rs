@@ -22,7 +22,7 @@ const ICON_ON: &[u8] = include_bytes!("../assets/tray-on.png");
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuId),
-    OpenConfig,
+    OpenConfig(&'static str),
     Peers(Vec<(String, String)>),
 }
 
@@ -31,7 +31,8 @@ struct TrayMenu {
     autostart: CheckMenuItem,
     devices: Submenu,
     device_items: Vec<MenuItem>,
-    open: MenuItem,
+    connection: MenuItem,
+    local: MenuItem,
     push: MenuItem,
     test_sound: MenuItem,
     quit: MenuItem,
@@ -57,11 +58,14 @@ impl TrayMenu {
         devices.append(&placeholder)?;
         menu.append(&devices)?;
 
-        let open = MenuItem::new("打开配置面板", true, None);
+        let connection = MenuItem::new("连接设置", true, None);
+        let local = MenuItem::new("本地设置", true, None);
         let push = MenuItem::new("推送当前剪贴板", true, None);
         let test_sound = MenuItem::new("测试提示音", true, None);
         let quit = MenuItem::new("退出 LanPaster", true, None);
-        menu.append(&open)?;
+        menu.append(&connection)?;
+        menu.append(&local)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&push)?;
         menu.append(&test_sound)?;
         menu.append(&PredefinedMenuItem::separator())?;
@@ -76,7 +80,8 @@ impl TrayMenu {
                 autostart,
                 devices,
                 device_items: vec![placeholder],
-                open,
+                connection,
+                local,
                 push,
                 test_sound,
                 quit,
@@ -167,8 +172,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 .set_checked(crate::autostart::is_enabled());
                         }
                     }
-                } else if id == *menu.open.id() {
-                    open_config_window();
+                } else if id == *menu.connection.id() {
+                    open_config_window("connection");
+                } else if id == *menu.local.id() {
+                    open_config_window("local");
                 } else if id == *menu.push.id() {
                     if self.app.sync_enabled.load(Ordering::Relaxed) {
                         let _ = self.app.clipboard_cmd.send(ClipboardCommand::Push);
@@ -180,7 +187,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     event_loop.exit();
                 }
             }
-            UserEvent::OpenConfig => open_config_window(),
+            UserEvent::OpenConfig(panel) => open_config_window(panel),
             UserEvent::Peers(peers) => {
                 debug!("tray device update: {} peer(s)", peers.len());
                 if let Some(menu) = self.menu.as_mut() {
@@ -214,7 +221,7 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
             ..
         } = event
         {
-            let _ = proxy.send_event(UserEvent::OpenConfig);
+            let _ = proxy.send_event(UserEvent::OpenConfig("connection"));
         }
     }));
 
@@ -302,10 +309,14 @@ fn load_icon(bytes: &[u8]) -> Result<Icon> {
     Icon::from_rgba(image.into_raw(), width, height).context("create tray icon")
 }
 
-fn open_config_window() {
+fn open_config_window(panel: &str) {
     match std::env::current_exe() {
         Ok(exe) => {
-            if let Err(err) = std::process::Command::new(exe).arg("ui").spawn() {
+            if let Err(err) = std::process::Command::new(exe)
+                .arg("ui")
+                .arg(panel)
+                .spawn()
+            {
                 warn!("failed to open config window: {err}");
             }
         }

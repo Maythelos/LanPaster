@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     let command = args.first().map(String::as_str).unwrap_or("run");
     match command {
         "run" => run(&args),
-        "ui" => run_config_ui(),
+        "ui" => run_config_ui(&args),
         "beep" => { sound::test_beep(); Ok(()) }
         "autostart" => autostart_cmd(&args),
         "send" => send(&args),
@@ -124,16 +124,21 @@ fn autostart_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn run_config_ui() -> Result<()> {
+fn run_config_ui(args: &[String]) -> Result<()> {
+    let panel = match args.get(1) {
+        Some(value) => ui::Panel::parse(value)
+            .ok_or_else(|| anyhow::anyhow!("unknown panel {value:?}; use connection or local"))?,
+        None => ui::Panel::Connection,
+    };
     let (cfg, path) = load_config()?;
     cfg.validate()?;
     init_logging(&cfg.log_level);
-    ui::run_config_window(cfg, path)
+    ui::run_config_window(cfg, path, panel)
 }
 
 fn print_help() {
     println!(
-        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
+        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui [connection|local]\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
         env!("CARGO_PKG_VERSION")
     );
 }

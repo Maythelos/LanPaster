@@ -2,7 +2,7 @@
 
 局域网剪贴板同步工具的可运行版本。
 
-当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、按需拉起的配置面板、提示音、开机自启、单实例和配置热加载。
+当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、按需拉起的连接设置 / 本地设置面板、提示音、开机自启、单实例和配置热加载。
 
 ## 已实现
 
@@ -30,7 +30,7 @@
   - 推送当前剪贴板
   - 退出程序
   - macOS 使用 Accessory 激活策略，不显示 Dock 图标
-- 配置面板：独立进程按需拉起（`lanpaster ui`），关闭即退出，不常驻；保存 TOML 配置
+- 配置面板拆成两个独立进程窗口：`lanpaster ui connection`（连接设置）和 `lanpaster ui local`（本地设置）；关闭即退出，不常驻
 - 无界面模式：`lanpaster run --headless`，适合服务器 / 调试 / 无桌面环境
 - 提示音：收到远端剪贴后播放短提示音；托盘菜单“测试提示音”，配置面板可关闭
 - 开机自启：macOS LaunchAgent、Windows 注册表 Run、Linux XDG autostart；托盘菜单可勾选，也可用 CLI
@@ -80,11 +80,17 @@ psk:    0123...（64 位 hex）
 ./target/release/lanpaster run --headless
 ```
 
-单独打开配置面板（托盘菜单“打开配置面板”也是启动这个子进程）：
+单独打开配置面板（托盘菜单里分别有“连接设置”和“本地设置”）：
 
 ```bash
-./target/release/lanpaster ui
+# 连接设置：设备名、PSK、端口、mDNS、手动节点
+./target/release/lanpaster ui connection
+
+# 本地设置：轮询、文本/文件大小、文件同步、提示音
+./target/release/lanpaster ui local
 ```
+
+不传参数时默认打开连接设置。
 
 提示音测试与开机自启：
 
