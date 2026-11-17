@@ -21,21 +21,16 @@ impl Panel {
 }
 
 pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> Result<()> {
-    match panel {
-        Panel::Connection => run_connection_window(config, config_path),
-        Panel::Local => run_local_window(config, config_path),
-    }
-}
-
-fn run_connection_window(config: Config, config_path: PathBuf) -> Result<()> {
     #[cfg(target_os = "macos")]
     make_regular_app();
-    let window = ConnectionWindow::new().context("create connection window")?;
-    window.set_device_name(config.device_name.clone().into());
-    window.set_psk(config.psk.clone().into());
-    window.set_listen_port(config.listen_port.to_string().into());
-    window.set_mdns_enabled(config.mdns_enabled);
-    window.set_peers(config.peers.join(", ").into());
+
+    let window = SettingsWindow::new().context("create settings window")?;
+    fill_form(&window, &config);
+    window.set_panel(match panel {
+        Panel::Connection => 0,
+        Panel::Local => 1,
+    });
+    window.set_app_version(env!("CARGO_PKG_VERSION").into());
     window.set_status("".into());
     window.set_status_error(false);
     window.set_status_success(false);
@@ -58,36 +53,56 @@ fn run_connection_window(config: Config, config_path: PathBuf) -> Result<()> {
         let base = config.clone();
         let path = config_path.clone();
         let window_weak = window.as_weak();
-        window.on_save(move |form| {
+        window.on_save_connection(move |form| {
             let result = save_connection(&path, &base, &form);
             if let Some(window) = window_weak.upgrade() {
-                match result {
-                    Ok(()) => {
-                        window.set_status_error(false);
-                        window.set_status_success(true);
-                        window.set_status(
-                            "已保存；端口/PSK/mDNS/节点需重启，设备名已热加载".into(),
-                        );
-                    }
-                    Err(err) => {
-                        window.set_status_error(true);
-                        window.set_status_success(false);
-                        window.set_status(format!("保存失败：{err:#}").into());
-                    }
-                }
+                apply_status(
+                    &window,
+                    result,
+                    "已保存；端口/PSK/mDNS/节点需重启，设备名已热加载",
+                );
             }
         });
     }
 
-    window.show().context("show connection window")?;
+    {
+        let base = config.clone();
+        let path = config_path.clone();
+        let window_weak = window.as_weak();
+        window.on_save_local(move |form| {
+            let result = save_local(&path, &base, &form);
+            if let Some(window) = window_weak.upgrade() {
+                apply_status(&window, result, "已保存并热加载");
+            }
+        });
+    }
+
+    window.show().context("show settings window")?;
     slint::run_event_loop().context("slint event loop")?;
     Ok(())
 }
 
-fn run_local_window(config: Config, config_path: PathBuf) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    make_regular_app();
-    let window = LocalWindow::new().context("create local window")?;
+fn apply_status(window: &SettingsWindow, result: Result<()>, success: &str) {
+    match result {
+        Ok(()) => {
+            window.set_status_error(false);
+            window.set_status_success(true);
+            window.set_status(success.into());
+        }
+        Err(err) => {
+            window.set_status_error(true);
+            window.set_status_success(false);
+            window.set_status(format!("保存失败：{err:#}").into());
+        }
+    }
+}
+
+fn fill_form(window: &SettingsWindow, config: &Config) {
+    window.set_device_name(config.device_name.clone().into());
+    window.set_psk(config.psk.clone().into());
+    window.set_listen_port(config.listen_port.to_string().into());
+    window.set_mdns_enabled(config.mdns_enabled);
+    window.set_peers(config.peers.join(", ").into());
     window.set_poll_ms(config.poll_interval_ms.to_string().into());
     window.set_max_text_kb(config.max_text_kb.to_string().into());
     window.set_max_file_mb(config.max_file_mb.to_string().into());
@@ -95,50 +110,6 @@ fn run_local_window(config: Config, config_path: PathBuf) -> Result<()> {
     window.set_max_files(config.max_files.to_string().into());
     window.set_file_sync(config.file_sync);
     window.set_sound_enabled(config.sound_enabled);
-    window.set_status("".into());
-    window.set_status_error(false);
-    window.set_status_success(false);
-
-    {
-        let window_weak = window.as_weak();
-        window.on_close_window(move || {
-            if let Some(window) = window_weak.upgrade() {
-                let _ = window.hide();
-            }
-            let _ = slint::quit_event_loop();
-        });
-    }
-    window.window().on_close_requested(|| {
-        let _ = slint::quit_event_loop();
-        slint::CloseRequestResponse::HideWindow
-    });
-
-    {
-        let base = config.clone();
-        let path = config_path.clone();
-        let window_weak = window.as_weak();
-        window.on_save(move |form| {
-            let result = save_local(&path, &base, &form);
-            if let Some(window) = window_weak.upgrade() {
-                match result {
-                    Ok(()) => {
-                        window.set_status_error(false);
-                        window.set_status_success(true);
-                        window.set_status("已保存并热加载".into());
-                    }
-                    Err(err) => {
-                        window.set_status_error(true);
-                        window.set_status_success(false);
-                        window.set_status(format!("保存失败：{err:#}").into());
-                    }
-                }
-            }
-        });
-    }
-
-    window.show().context("show local window")?;
-    slint::run_event_loop().context("slint event loop")?;
-    Ok(())
 }
 
 fn save_connection(path: &std::path::Path, fallback: &Config, form: &ConnectionForm) -> Result<()> {

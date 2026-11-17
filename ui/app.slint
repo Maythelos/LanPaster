@@ -3,19 +3,35 @@ import { Button, HorizontalBox, LineEdit, Palette, Switch, VerticalBox } from "s
 global Theme {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
     out property <color> window-bg: dark ? #1e1e1e : #f5f5f7;
+    out property <color> sidebar-bg: dark ? #252527 : #ececee;
     out property <color> card-bg: dark ? #2c2c2e : #ffffff;
-    out property <color> field-bg: dark ? #1c1c1e : #f5f5f7;
     out property <color> text: dark ? #f5f5f7 : #1d1d1f;
     out property <color> secondary: dark ? #a1a1a6 : #6e6e73;
     out property <color> border: dark ? #3a3a3c : #e5e5ea;
+    out property <color> separator: dark ? #38383a : #ededf0;
+    out property <color> selected: dark ? #3a3a3c : #dcdcdf;
+    out property <color> hover: dark ? #303032 : #e4e4e7;
     out property <color> error: #ff3b30;
     out property <color> success: #28cd41;
+}
+
+component Separator inherits Rectangle {
+    height: 1px;
+    background: transparent;
+    Rectangle {
+        x: 16px;
+        width: parent.width - 32px;
+        height: 1px;
+        background: Theme.separator;
+    }
 }
 
 component Section inherits VerticalBox {
     in property <string> title;
     spacing: 8px;
     vertical-stretch: 0;
+    horizontal-stretch: 1;
+    cross-axis-alignment: stretch;
 
     Text {
         text: root.title;
@@ -30,87 +46,139 @@ component Section inherits VerticalBox {
         border-width: 1px;
         border-color: Theme.border;
         vertical-stretch: 0;
+        horizontal-stretch: 1;
 
         VerticalBox {
-            padding: 14px;
-            spacing: 10px;
+            padding-top: 6px;
+            padding-bottom: 6px;
             vertical-stretch: 0;
+            horizontal-stretch: 1;
+            cross-axis-alignment: stretch;
             @children
         }
     }
 }
 
-component SettingRow inherits HorizontalBox {
+component SettingRow inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
-    spacing: 16px;
-    vertical-stretch: 0;
-    height: 40px;
-
-    VerticalBox {
-        width: 210px;
-        spacing: 2px;
-        alignment: center;
-
-        Text {
-            text: root.label;
-            font-size: 13px;
-            color: Theme.text;
-        }
-        if root.hint != "" : Text {
-            text: root.hint;
-            font-size: 11px;
-            color: Theme.secondary;
-            wrap: word-wrap;
-        }
-    }
-
-    Rectangle { horizontal-stretch: 1; }
+    height: 46px;
+    background: transparent;
+    horizontal-stretch: 1;
 
     HorizontalBox {
-        width: 280px;
-        vertical-stretch: 0;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
         cross-axis-alignment: center;
-        @children
+
+        VerticalBox {
+            width: 200px;
+            spacing: 2px;
+            alignment: center;
+
+            Text {
+                text: root.label;
+                font-size: 13px;
+                color: Theme.text;
+            }
+            if root.hint != "" : Text {
+                text: root.hint;
+                font-size: 11px;
+                color: Theme.secondary;
+                wrap: word-wrap;
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        HorizontalBox {
+            width: 260px;
+            cross-axis-alignment: center;
+            @children
+        }
     }
 }
 
-component ToggleRow inherits HorizontalBox {
+component ToggleRow inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
     in-out property <bool> checked;
-    spacing: 16px;
-    vertical-stretch: 0;
-    height: 40px;
+    height: 46px;
+    background: transparent;
+    horizontal-stretch: 1;
 
-    VerticalBox {
-        width: 210px;
-        spacing: 2px;
-        alignment: center;
+    HorizontalBox {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
+        cross-axis-alignment: center;
 
-        Text {
-            text: root.label;
-            font-size: 13px;
-            color: Theme.text;
+        VerticalBox {
+            width: 200px;
+            spacing: 2px;
+            alignment: center;
+
+            Text {
+                text: root.label;
+                font-size: 13px;
+                color: Theme.text;
+            }
+            if root.hint != "" : Text {
+                text: root.hint;
+                font-size: 11px;
+                color: Theme.secondary;
+                wrap: word-wrap;
+            }
         }
-        if root.hint != "" : Text {
-            text: root.hint;
-            font-size: 11px;
-            color: Theme.secondary;
-            wrap: word-wrap;
-        }
-    }
 
-    Rectangle { horizontal-stretch: 1; }
+        Rectangle { horizontal-stretch: 1; }
 
-    VerticalBox {
-        alignment: center;
-        Switch {
-            checked <=> root.checked;
+        VerticalBox {
+            alignment: center;
+            Switch {
+                checked <=> root.checked;
+            }
         }
     }
 }
 
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> selected;
+    callback clicked;
+
+    height: 34px;
+    border-radius: 7px;
+    background: root.selected ? Theme.selected : (touch.has-hover ? Theme.hover : transparent);
+    animate background { duration: 130ms; }
+
+    Image {
+        x: 10px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: root.icon;
+        colorize: root.selected ? Theme.text : Theme.secondary;
+    }
+
+    Text {
+        x: 34px;
+        y: 0;
+        height: parent.height;
+        vertical-alignment: center;
+        text: root.label;
+        font-size: 13px;
+        color: root.selected ? Theme.text : Theme.secondary;
+        font-weight: root.selected ? 600 : 400;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
 
 export struct ConnectionForm {
     device-name: string,
@@ -130,134 +198,19 @@ export struct LocalForm {
     sound-enabled: bool,
 }
 
-export component ConnectionWindow inherits Window {
-    title: "LanPaster 连接设置";
-    preferred-width: 680px;
-    preferred-height: 520px;
+export component SettingsWindow inherits Window {
+    title: "LanPaster 设置";
+    preferred-width: 860px;
+    preferred-height: 680px;
     background: Theme.window-bg;
 
+    in-out property <int> panel: 0;
+    in-out property <string> app-version: "";
     in-out property <string> device-name: "";
     in-out property <string> psk: "";
     in-out property <string> listen-port: "";
     in-out property <bool> mdns-enabled: true;
     in-out property <string> peers: "";
-    in-out property <string> status: "";
-    in-out property <bool> status-error: false;
-    in-out property <bool> status-success: false;
-
-    callback save(ConnectionForm);
-    callback close-window();
-
-    VerticalBox {
-        padding: 22px;
-        spacing: 18px;
-
-        VerticalBox {
-            spacing: 4px;
-            Text {
-                text: "连接设置";
-                font-size: 24px;
-                font-weight: 600;
-                color: Theme.text;
-            }
-            Text {
-                text: "管理设备身份、加密密钥和局域网连接方式。";
-                font-size: 12px;
-                color: Theme.secondary;
-                wrap: word-wrap;
-            }
-        }
-
-        Section {
-            title: "设备";
-            SettingRow {
-                label: "设备名称";
-                LineEdit { height: 26px;
-                    text <=> root.device-name;
-                    placeholder-text: "例如：MacBook Pro";
-                }
-            }
-            SettingRow {
-                label: "预共享密钥";
-                hint: "所有设备必须一致";
-                LineEdit { height: 26px;
-                    text <=> root.psk;
-                    input-type: InputType.password;
-                    placeholder-text: "64 位 hex";
-                }
-            }
-            SettingRow {
-                label: "监听端口";
-                LineEdit { height: 26px;
-                    text <=> root.listen-port;
-                    placeholder-text: "39393";
-                }
-            }
-        }
-
-        Section {
-            title: "发现与连接";
-            SettingRow {
-                label: "手动节点";
-                hint: "mDNS 不可用时使用";
-                LineEdit { height: 26px;
-                    text <=> root.peers;
-                    placeholder-text: "192.168.1.20:39393, 192.168.1.21:39393";
-                }
-            }
-            ToggleRow {
-                label: "mDNS 自动发现";
-                hint: "在局域网内自动发现其他设备";
-                checked <=> root.mdns-enabled;
-            }
-        }
-
-        Text {
-            text: "端口、密钥、mDNS 和手动节点需要重启后生效；设备名称保存后立即生效。";
-            font-size: 11px;
-            color: Theme.secondary;
-            wrap: word-wrap;
-        }
-
-        Rectangle { vertical-stretch: 1; }
-
-        HorizontalBox {
-            spacing: 10px;
-            Text {
-                text: root.status;
-                color: root.status-error ? Theme.error : (root.status-success ? Theme.success : Theme.secondary);
-                font-size: 12px;
-                wrap: word-wrap;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: "关闭";
-                clicked => { root.close-window(); }
-            }
-            Button {
-                text: "保存";
-                primary: true;
-                clicked => {
-                    root.save({
-                        device-name: root.device-name,
-                        psk: root.psk,
-                        listen-port: root.listen-port,
-                        mdns-enabled: root.mdns-enabled,
-                        peers: root.peers,
-                    });
-                }
-            }
-        }
-    }
-}
-
-export component LocalWindow inherits Window {
-    title: "LanPaster 本地设置";
-    preferred-width: 700px;
-    preferred-height: 620px;
-    background: Theme.window-bg;
-
     in-out property <string> poll-ms: "";
     in-out property <string> max-text-kb: "";
     in-out property <string> max-file-mb: "";
@@ -269,104 +222,268 @@ export component LocalWindow inherits Window {
     in-out property <bool> status-error: false;
     in-out property <bool> status-success: false;
 
-    callback save(LocalForm);
+    callback save-connection(ConnectionForm);
+    callback save-local(LocalForm);
     callback close-window();
 
-    VerticalBox {
-        padding: 22px;
-        spacing: 18px;
+    function clear-status() {
+        root.status = "";
+        root.status-error = false;
+        root.status-success = false;
+    }
 
-        VerticalBox {
-            spacing: 4px;
-            Text {
-                text: "本地设置";
-                font-size: 24px;
-                font-weight: 600;
-                color: Theme.text;
-            }
-            Text {
-                text: "控制剪贴板读取、大小限制和提醒行为。";
-                font-size: 12px;
-                color: Theme.secondary;
-                wrap: word-wrap;
+    HorizontalBox {
+        Rectangle {
+            width: 200px;
+            background: Theme.sidebar-bg;
+
+            VerticalBox {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-top: 18px;
+                padding-bottom: 18px;
+                spacing: 4px;
+
+                Text {
+                    text: "LanPaster";
+                    font-size: 18px;
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Text {
+                    text: "设置";
+                    font-size: 11px;
+                    color: Theme.secondary;
+                }
+
+                Rectangle { height: 18px; }
+
+                Text {
+                    text: "偏好设置";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.secondary;
+                }
+
+                NavItem {
+                    label: "连接";
+                    icon: @image-url("../assets/nav-connection.png");
+                    selected: root.panel == 0;
+                    clicked => {
+                        root.panel = 0;
+                        root.clear-status();
+                    }
+                }
+                NavItem {
+                    label: "本地";
+                    icon: @image-url("../assets/nav-local.png");
+                    selected: root.panel == 1;
+                    clicked => {
+                        root.panel = 1;
+                        root.clear-status();
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                Text {
+                    text: "v" + root.app-version;
+                    font-size: 11px;
+                    color: Theme.secondary;
+                }
             }
         }
 
-        Section {
-            title: "剪贴板";
-            SettingRow {
-                label: "轮询间隔 (ms)";
-                hint: "平台 watcher 不可用时的兜底频率";
-                LineEdit { height: 26px; text <=> root.poll-ms; placeholder-text: "500"; }
-            }
-            SettingRow {
-                label: "文本上限 (KB)";
-                LineEdit { height: 26px; text <=> root.max-text-kb; placeholder-text: "1024"; }
-            }
-            SettingRow {
-                label: "单文件 / 图片上限 (MB)";
-                hint: "图片按一个文件项计算";
-                LineEdit { height: 26px; text <=> root.max-file-mb; placeholder-text: "100"; }
-            }
-            SettingRow {
-                label: "单次总量 (MB)";
-                LineEdit { height: 26px; text <=> root.max-batch-mb; placeholder-text: "200"; }
-            }
-            SettingRow {
-                label: "文件数量上限";
-                LineEdit { height: 26px; text <=> root.max-files; placeholder-text: "50"; }
-            }
+        Rectangle {
+            width: 1px;
+            background: Theme.border;
         }
 
-        Section {
-            title: "行为";
-            ToggleRow {
-                label: "同步文件剪贴板";
-                hint: "关闭后只同步文本和图片";
-                checked <=> root.file-sync;
-            }
-            ToggleRow {
-                label: "收到远端剪贴时播放提示音";
-                checked <=> root.sound-enabled;
-            }
-        }
+        Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.window-bg;
 
-        Text {
-            text: "本地设置保存后立即热加载，不需要重启 LanPaster。";
-            font-size: 11px;
-            color: Theme.secondary;
-            wrap: word-wrap;
-        }
+            VerticalBox {
+                padding-left: 24px;
+                padding-right: 24px;
+                padding-top: 22px;
+                padding-bottom: 22px;
+                spacing: 18px;
+                cross-axis-alignment: stretch;
 
-        Rectangle { vertical-stretch: 1; }
+                VerticalBox {
+                    spacing: 4px;
+                    vertical-stretch: 0;
+                    Text {
+                        text: root.panel == 0 ? "连接设置" : "本地设置";
+                        font-size: 22px;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    Text {
+                        text: root.panel == 0 ? "管理设备身份、加密密钥和局域网连接方式。" : "控制剪贴板读取、大小限制和提醒行为。";
+                        font-size: 12px;
+                        color: Theme.secondary;
+                        wrap: word-wrap;
+                    }
+                }
 
-        HorizontalBox {
-            spacing: 10px;
-            Text {
-                text: root.status;
-                color: root.status-error ? Theme.error : (root.status-success ? Theme.success : Theme.secondary);
-                font-size: 12px;
-                wrap: word-wrap;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: "关闭";
-                clicked => { root.close-window(); }
-            }
-            Button {
-                text: "保存";
-                primary: true;
-                clicked => {
-                    root.save({
-                        poll-ms: root.poll-ms,
-                        max-text-kb: root.max-text-kb,
-                        max-file-mb: root.max-file-mb,
-                        max-batch-mb: root.max-batch-mb,
-                        max-files: root.max-files,
-                        file-sync: root.file-sync,
-                        sound-enabled: root.sound-enabled,
-                    });
+                if root.panel == 0 : VerticalBox {
+                    width: 100%;
+                    spacing: 18px;
+                    vertical-stretch: 0;
+                    horizontal-stretch: 1;
+                    cross-axis-alignment: stretch;
+
+                    Section {
+                        title: "设备";
+                        horizontal-stretch: 1;
+                        SettingRow {
+                            label: "设备名称";
+                            LineEdit { height: 26px; text <=> root.device-name; placeholder-text: "例如：MacBook Pro"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "预共享密钥";
+                            hint: "所有设备必须一致";
+                            LineEdit { height: 26px; text <=> root.psk; input-type: InputType.password; placeholder-text: "64 位 hex"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "监听端口";
+                            LineEdit { height: 26px; text <=> root.listen-port; placeholder-text: "39393"; }
+                        }
+                    }
+
+                    Section {
+                        title: "发现与连接";
+                        horizontal-stretch: 1;
+                        SettingRow {
+                            label: "手动节点";
+                            hint: "mDNS 不可用时使用";
+                            LineEdit { height: 26px; text <=> root.peers; placeholder-text: "192.168.1.20:39393, 192.168.1.21:39393"; }
+                        }
+                        Separator {}
+                        ToggleRow {
+                            label: "mDNS 自动发现";
+                            hint: "在局域网内自动发现其他设备";
+                            checked <=> root.mdns-enabled;
+                        }
+                    }
+
+                    Text {
+                        text: "端口、密钥、mDNS 和手动节点需要重启后生效；设备名称保存后立即生效。";
+                        font-size: 11px;
+                        color: Theme.secondary;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.panel == 1 : VerticalBox {
+                    width: 100%;
+                    spacing: 18px;
+                    vertical-stretch: 0;
+                    horizontal-stretch: 1;
+                    cross-axis-alignment: stretch;
+
+                    Section {
+                        title: "剪贴板";
+                        horizontal-stretch: 1;
+                        SettingRow {
+                            label: "轮询间隔 (ms)";
+                            hint: "平台 watcher 不可用时的兜底频率";
+                            LineEdit { height: 26px; text <=> root.poll-ms; placeholder-text: "500"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "文本上限 (KB)";
+                            LineEdit { height: 26px; text <=> root.max-text-kb; placeholder-text: "1024"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "单文件 / 图片上限 (MB)";
+                            hint: "图片按一个文件项计算";
+                            LineEdit { height: 26px; text <=> root.max-file-mb; placeholder-text: "100"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "单次总量 (MB)";
+                            LineEdit { height: 26px; text <=> root.max-batch-mb; placeholder-text: "200"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "文件数量上限";
+                            LineEdit { height: 26px; text <=> root.max-files; placeholder-text: "50"; }
+                        }
+                    }
+
+                    Section {
+                        title: "行为";
+                        horizontal-stretch: 1;
+                        ToggleRow {
+                            label: "同步文件剪贴板";
+                            hint: "关闭后只同步文本和图片";
+                            checked <=> root.file-sync;
+                        }
+                        Separator {}
+                        ToggleRow {
+                            label: "收到远端剪贴时播放提示音";
+                            checked <=> root.sound-enabled;
+                        }
+                    }
+
+                    Text {
+                        text: "本地设置保存后立即热加载，不需要重启 LanPaster。";
+                        font-size: 11px;
+                        color: Theme.secondary;
+                        wrap: word-wrap;
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                HorizontalBox {
+                    spacing: 10px;
+                    Text {
+                        text: root.status;
+                        color: root.status-error ? Theme.error : (root.status-success ? Theme.success : Theme.secondary);
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "关闭";
+                        clicked => { root.close-window(); }
+                    }
+                    if root.panel == 0 : Button {
+                        text: "保存";
+                        primary: true;
+                        clicked => {
+                            root.save-connection({
+                                device-name: root.device-name,
+                                psk: root.psk,
+                                listen-port: root.listen-port,
+                                mdns-enabled: root.mdns-enabled,
+                                peers: root.peers,
+                            });
+                        }
+                    }
+                    if root.panel == 1 : Button {
+                        text: "保存";
+                        primary: true;
+                        clicked => {
+                            root.save-local({
+                                poll-ms: root.poll-ms,
+                                max-text-kb: root.max-text-kb,
+                                max-file-mb: root.max-file-mb,
+                                max-batch-mb: root.max-batch-mb,
+                                max-files: root.max-files,
+                                file-sync: root.file-sync,
+                                sound-enabled: root.sound-enabled,
+                            });
+                        }
+                    }
                 }
             }
         }
