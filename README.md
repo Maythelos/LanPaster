@@ -115,8 +115,8 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 默认构建 Universal（arm64 + x86_64）App，产物在 `dist/`：
 
 - `dist/LanPaster.app`
-- `dist/LanPaster-0.3.0-macos-universal.dmg`
-- `dist/LanPaster-0.3.0-macos-universal.zip`
+- `dist/LanPaster-<version>-macos-universal.dmg`
+- `dist/LanPaster-<version>-macos-universal.zip`
 
 只构建当前 arm64 可以加：
 
@@ -160,11 +160,9 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 | `listen_port` | 39393 | TCP 监听端口 |
 | `poll_interval_ms` | 500 | 剪贴板轮询间隔 |
 | `max_text_kb` | 1024 | 单条文本上限 |
-| `max_image_mb` | 20 | 图片原始编码字节上限 |
-| `max_file_mb` | 100 | 单文件上限 |
+| `max_file_mb` | 100 | 单文件 / 图片上限（按编码后字节计） |
 | `max_batch_mb` | 200 | 单次剪贴的总量上限 |
 | `max_files` | 50 | 单次文件数量上限 |
-| `max_image_pixels` | 50000000 | 图片像素上限（防解压炸弹） |
 | `file_sync` | true | 文件同步开关 |
 | `sound_enabled` | true | 收到远端剪贴时是否播放提示音 |
 | `cache_max_mb` | 1024 | 接收临时文件缓存上限，超出清理旧事件目录 |
@@ -172,7 +170,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 | `peers` | `[]` | 手动直连地址列表 |
 | `log_level` | info | `RUST_LOG` 可覆盖，如 `RUST_LOG=debug` |
 
-**限流规则：** 文本、图片、单文件、总量任一超限，整次剪贴事件不同步，不做部分同步。文件在读取前先用元数据判断大小。
+**限流规则：** 文本、单文件（图片也按一个文件项处理）、总量任一超限，整次剪贴事件不同步，不做部分同步。图片只看编码后字节大小，不限制像素；文件在读取前先用元数据判断大小。
 
 ## 接收文件
 

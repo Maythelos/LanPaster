@@ -372,23 +372,25 @@ fn read_image(
         let chosen = preferred.or_else(|| find_image_format(&formats));
         if let Some((source_format, mime)) = chosen {
             if let Ok(bytes) = ctx.get_buffer(&source_format) {
-                if !bytes.is_empty() && bytes.len() as u64 <= config.max_image_bytes() {
-                    let (width, height) = image_dimensions(&bytes);
-                    if let Some((w, h)) = width.zip(height) {
-                        if (w as u64).saturating_mul(h as u64) > config.max_image_pixels {
-                            debug!("skip image: {}x{} exceeds pixel limit", w, h);
-                            return None;
-                        }
-                    }
-                    let hash = sha256_prefixed(b"image", &bytes);
-                    return Some(LocalClipboard::Image {
-                        mime,
-                        bytes,
-                        width,
-                        height,
-                        hash,
-                    });
+                if bytes.is_empty() {
+                    return None;
                 }
+                let limit = config.max_file_bytes().min(config.max_batch_bytes());
+                if bytes.len() as u64 > limit {
+                    debug!(
+                        "skip image: {} bytes exceeds file size limit",
+                        bytes.len()
+                    );
+                    return None;
+                }
+                let hash = sha256_prefixed(b"image", &bytes);
+                return Some(LocalClipboard::Image {
+                    mime,
+                    bytes,
+                    width: None,
+                    height: None,
+                    hash,
+                });
             }
         }
     }
@@ -396,16 +398,13 @@ fn read_image(
     let data = ctx.get_image().ok()?;
     let dynamic = data.get_dynamic_image().ok()?;
     let (width, height) = (dynamic.width(), dynamic.height());
-    if (width as u64).saturating_mul(height as u64) > config.max_image_pixels {
-        debug!("skip image: {width}x{height} exceeds pixel limit");
-        return None;
-    }
     let mut png = Vec::new();
     dynamic
         .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;
-    if png.len() as u64 > config.max_image_bytes() {
-        debug!("skip image: encoded PNG exceeds image limit");
+    let limit = config.max_file_bytes().min(config.max_batch_bytes());
+    if png.len() as u64 > limit {
+        debug!("skip image: encoded PNG exceeds file size limit");
         return None;
     }
     let hash = sha256_prefixed(b"image", &png);
@@ -511,12 +510,6 @@ fn sha256_prefixed(prefix: &[u8], data: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-fn image_dimensions(bytes: &[u8]) -> (Option<u32>, Option<u32>) {
-    match image::load_from_memory(bytes) {
-        Ok(img) => (Some(img.width()), Some(img.height())),
-        Err(_) => (None, None),
-    }
-}
 
 fn find_image_format(formats: &[String]) -> Option<(String, String)> {
     const CANDIDATES: &[(&str, &str)] = &[

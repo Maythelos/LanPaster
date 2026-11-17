@@ -87,11 +87,9 @@ fn fill_form(window: &ConfigWindow, config: &Config) {
     window.set_listen_port(config.listen_port.to_string().into());
     window.set_poll_ms(config.poll_interval_ms.to_string().into());
     window.set_max_text_kb(config.max_text_kb.to_string().into());
-    window.set_max_image_mb(config.max_image_mb.to_string().into());
     window.set_max_file_mb(config.max_file_mb.to_string().into());
     window.set_max_batch_mb(config.max_batch_mb.to_string().into());
     window.set_max_files(config.max_files.to_string().into());
-    window.set_max_image_pixels(config.max_image_pixels.to_string().into());
     window.set_file_sync(config.file_sync);
     window.set_sound_enabled(config.sound_enabled);
     window.set_mdns_enabled(config.mdns_enabled);
@@ -105,11 +103,9 @@ fn form_to_config(base: &Config, form: &ConfigForm) -> Result<Config> {
     cfg.listen_port = parse_u16(&form.listen_port, "监听端口")?;
     cfg.poll_interval_ms = parse_u64(&form.poll_ms, "轮询间隔")?;
     cfg.max_text_kb = parse_u64(&form.max_text_kb, "文本上限")?;
-    cfg.max_image_mb = parse_u64(&form.max_image_mb, "图片上限")?;
     cfg.max_file_mb = parse_u64(&form.max_file_mb, "单文件上限")?;
     cfg.max_batch_mb = parse_u64(&form.max_batch_mb, "单次总量上限")?;
     cfg.max_files = parse_usize(&form.max_files, "文件数量上限")?;
-    cfg.max_image_pixels = parse_u64(&form.max_image_pixels, "图片像素上限")?;
     cfg.file_sync = form.file_sync;
     cfg.sound_enabled = form.sound_enabled;
     cfg.mdns_enabled = form.mdns_enabled;
@@ -165,11 +161,9 @@ mod tests {
             listen_port: "40000".into(),
             poll_ms: "500".into(),
             max_text_kb: "1024".into(),
-            max_image_mb: "20".into(),
             max_file_mb: "100".into(),
             max_batch_mb: "200".into(),
             max_files: "50".into(),
-            max_image_pixels: "50000000".into(),
             file_sync: true,
             sound_enabled: true,
             mdns_enabled: false,

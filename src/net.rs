@@ -844,13 +844,9 @@ fn validate_offer(
             if !item.mime.starts_with("image/") {
                 return Err("invalid image mime".to_string());
             }
-            if item.size > config.max_image_bytes() {
-                return Err("image exceeds size limit".to_string());
-            }
-            if let (Some(w), Some(h)) = (item.width, item.height) {
-                if (w as u64).saturating_mul(h as u64) > config.max_image_pixels {
-                    return Err("image exceeds pixel limit".to_string());
-                }
+            let limit = config.max_file_bytes().min(config.max_batch_bytes());
+            if item.size > limit {
+                return Err("image exceeds file size limit".to_string());
             }
             Ok(None)
         }

@@ -16,11 +16,9 @@ pub struct Config {
     pub listen_port: u16,
     pub poll_interval_ms: u64,
     pub max_text_kb: u64,
-    pub max_image_mb: u64,
     pub max_file_mb: u64,
     pub max_batch_mb: u64,
     pub max_files: usize,
-    pub max_image_pixels: u64,
     pub file_sync: bool,
     pub sound_enabled: bool,
     pub cache_max_mb: u64,
@@ -43,11 +41,9 @@ impl Default for Config {
             listen_port: 39393,
             poll_interval_ms: 500,
             max_text_kb: 1024,
-            max_image_mb: 20,
             max_file_mb: 100,
             max_batch_mb: 200,
             max_files: 50,
-            max_image_pixels: 50_000_000,
             file_sync: true,
             sound_enabled: true,
             cache_max_mb: 1024,
@@ -139,7 +135,6 @@ impl Config {
         }
         self.psk_bytes()?;
         if self.max_text_kb == 0
-            || self.max_image_mb == 0
             || self.max_file_mb == 0
             || self.max_batch_mb == 0
             || self.max_files == 0
@@ -151,10 +146,6 @@ impl Config {
 
     pub fn max_text_bytes(&self) -> u64 {
         self.max_text_kb.saturating_mul(1024)
-    }
-
-    pub fn max_image_bytes(&self) -> u64 {
-        self.max_image_mb.saturating_mul(1024 * 1024)
     }
 
     pub fn max_file_bytes(&self) -> u64 {

@@ -6,11 +6,9 @@ export struct ConfigForm {
     listen-port: string,
     poll-ms: string,
     max-text-kb: string,
-    max-image-mb: string,
     max-file-mb: string,
     max-batch-mb: string,
     max-files: string,
-    max-image-pixels: string,
     file-sync: bool,
     sound-enabled: bool,
     mdns-enabled: bool,
@@ -27,11 +25,9 @@ export component ConfigWindow inherits Window {
     in-out property <string> listen-port: "";
     in-out property <string> poll-ms: "";
     in-out property <string> max-text-kb: "";
-    in-out property <string> max-image-mb: "";
     in-out property <string> max-file-mb: "";
     in-out property <string> max-batch-mb: "";
     in-out property <string> max-files: "";
-    in-out property <string> max-image-pixels: "";
     in-out property <bool> file-sync: true;
     in-out property <bool> sound-enabled: true;
     in-out property <bool> mdns-enabled: true;
@@ -105,12 +101,7 @@ export component ConfigWindow inherits Window {
                 }
                 HorizontalBox {
                     spacing: 8px;
-                    Text { text: "图片上限 (MB)"; width: 140px; }
-                    LineEdit { text <=> root.max-image-mb; }
-                }
-                HorizontalBox {
-                    spacing: 8px;
-                    Text { text: "单文件上限 (MB)"; width: 140px; }
+                    Text { text: "单文件 / 图片上限 (MB)"; width: 140px; }
                     LineEdit { text <=> root.max-file-mb; }
                 }
                 HorizontalBox {
@@ -122,11 +113,6 @@ export component ConfigWindow inherits Window {
                     spacing: 8px;
                     Text { text: "文件数量上限"; width: 140px; }
                     LineEdit { text <=> root.max-files; }
-                }
-                HorizontalBox {
-                    spacing: 8px;
-                    Text { text: "图片像素上限"; width: 140px; }
-                    LineEdit { text <=> root.max-image-pixels; }
                 }
                 CheckBox {
                     text: "同步文件剪贴板";
@@ -150,11 +136,9 @@ export component ConfigWindow inherits Window {
                         listen-port: root.listen-port,
                         poll-ms: root.poll-ms,
                         max-text-kb: root.max-text-kb,
-                        max-image-mb: root.max-image-mb,
                         max-file-mb: root.max-file-mb,
                         max-batch-mb: root.max-batch-mb,
                         max-files: root.max-files,
-                        max-image-pixels: root.max-image-pixels,
                         file-sync: root.file-sync,
                         sound-enabled: root.sound-enabled,
                         mdns-enabled: root.mdns-enabled,
