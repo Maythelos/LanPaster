@@ -106,6 +106,30 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 
 启动日志会显示已连接设备。按 `Ctrl-C` 退出。
 
+## macOS 打包
+
+```bash
+./scripts/package-macos.sh
+```
+
+默认构建 Universal（arm64 + x86_64）App，产物在 `dist/`：
+
+- `dist/LanPaster.app`
+- `dist/LanPaster-0.3.0-macos-universal.dmg`
+- `dist/LanPaster-0.3.0-macos-universal.zip`
+
+只构建当前 arm64 可以加：
+
+```bash
+ONLY_ARM64=1 ./scripts/package-macos.sh
+```
+
+App 使用 ad-hoc 签名，没有 Apple 开发者签名 / 公证。自己本机运行通常没问题；如果从网络下载后被 Gatekeeper 拦截，右键“打开”，或执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/LanPaster.app
+```
+
 ## 测试 / 手动推送
 
 这些命令用于调试，也可以当作“手动推送剪贴板”的临时替代：
@@ -185,6 +209,8 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 - `ui/app.slint`：配置窗口布局
 - `assets/tray-*.png`：托盘图标
 - `src/client.rs`：`send` / `send-file` / `send-files` / `send-image` 调试客户端
+- `scripts/package-macos.sh`：macOS Universal App / DMG / ZIP 打包
+- `assets/AppIcon.icns`：App 图标
 
 ## 已验证
 
@@ -202,6 +228,8 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 - 修改 `max_text_kb` 后无需重启立即生效
 - `clipboard-rs` 平台 watcher 在 macOS 上生效
 - 两次 700KB 文件接收后只保留最新事件目录
+- Universal `.app`（arm64 + x86_64）构建、ad-hoc 签名、DMG 挂载验证通过
+- 从 `.app` 启动托盘进程和配置 UI 进程均正常
 
 资源占用（release，macOS arm64 实测）：
 
@@ -211,8 +239,8 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 
 ## 下一步
 
-1. Windows / Linux 实机验证
-2. `.app` / Windows exe / Linux AppImage 打包
+1. Windows / Linux 实机验证与打包
+2. macOS 公证 / Developer ID 签名（可选）
 3. 配置热加载扩展到端口 / PSK / mDNS / 手动节点
 4. 剪贴历史、设备管理
 5. 目录同步 / 断点续传

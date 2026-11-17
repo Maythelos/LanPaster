@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 pub fn run_config_window(config: Config, config_path: PathBuf) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    make_regular_app();
     let window = ConfigWindow::new().context("create config window")?;
     fill_form(&window, &config);
     window.set_status("阈值/文件同步/提示音/轮询会热加载；端口/密钥/mDNS/节点需要重启。".into());
@@ -65,6 +67,18 @@ pub fn run_config_window(config: Config, config_path: PathBuf) -> Result<()> {
     window.show().context("show config window")?;
     slint::run_event_loop().context("slint event loop")?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn make_regular_app() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    app.activate();
 }
 
 fn fill_form(window: &ConfigWindow, config: &Config) {

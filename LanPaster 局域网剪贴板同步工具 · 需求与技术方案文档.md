@@ -140,13 +140,13 @@ LanPaster 是后台常驻型桌面工具，依托局域网实现多主机剪贴�
 
 ### 打包分发
 
-- **macOS：**Universal 程序包（arm64 \+ x86\_64），配置隐藏 Dock 图标。
+- **macOS：**Universal 程序包（arm64 \+ x86\_64），`LSUIElement` 隐藏 Dock 图标；由 `scripts/package-macos.sh` 生成 `.app` / `.dmg` / `.zip`，使用 ad-hoc 签名。
 
 - **Windows：**单文件 exe。
 
 - **Linux：**x86\_64 AppImage 或发行版二进制（GUI / ALSA 依赖使完全静态链接不现实）。
 
-- 自用无需开发者签名，macOS 首次打开需在隐私设置手动放行。
+- 自用使用 ad-hoc 签名；未做 Apple 公证，从网络下载后可能需要在“隐私与安全性”中放行，或右键打开。
 
 ## 非功能性需求
 
@@ -300,7 +300,7 @@ dirs 读取系统标准配置目录；toml 可读性好，适合自用工具配�
 
 - **编译目标：**macOS arm64、macOS x86\_64、Windows x86\_64、Linux x86\_64。
 
-- **macOS：**合并双架构为 Universal 二进制，构造 App Bundle 并写入配置文件，隐藏 Dock 图标。
+- **macOS：**合并双架构为 Universal 二进制，构造 App Bundle、写入 `Info.plist`（`LSUIElement`、本地网络权限、Bonjour 服务类型），ad-hoc 签名并生成 DMG / ZIP。
 
 - **流水线：**CI 使用 macOS / Windows / Linux 原生 runner 构建，产物打包与二进制瘦身；GUI 跨平台交叉编译不作为主路径。
 
