@@ -4,7 +4,7 @@ use std::sync::{
     atomic::Ordering,
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -18,12 +18,14 @@ use winit::{
 
 const ICON_OFF: &[u8] = include_bytes!("../assets/tray-off.png");
 const ICON_ON: &[u8] = include_bytes!("../assets/tray-on.png");
+const ICON_ACTIVE: &[u8] = include_bytes!("../assets/tray-active.png");
 
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuId),
     OpenConfig(&'static str),
     Peers(Vec<(String, String)>),
+    Activity,
 }
 
 struct TrayMenu {
@@ -116,6 +118,7 @@ struct AppHandler {
     menu: Option<TrayMenu>,
     tray: Option<TrayIcon>,
     failed: bool,
+    active_until: Option<Instant>,
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
@@ -161,7 +164,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     if enabled {
                         let _ = self.app.clipboard_cmd.send(ClipboardCommand::Push);
                     }
-                    update_tray_status(menu, self.tray.as_ref(), &self.app);
+                    update_tray_status(
+                        menu,
+                        self.tray.as_ref(),
+                        &self.app,
+                        self.active_until.is_some(),
+                    );
                 } else if id == *menu.autostart.id() {
                     let enabled = !crate::autostart::is_enabled();
                     match crate::autostart::set(enabled) {
@@ -192,8 +200,36 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 debug!("tray device update: {} peer(s)", peers.len());
                 if let Some(menu) = self.menu.as_mut() {
                     menu.update_devices(&peers);
-                    update_tray_status(menu, self.tray.as_ref(), &self.app);
+                    update_tray_status(
+                        menu,
+                        self.tray.as_ref(),
+                        &self.app,
+                        self.active_until.is_some(),
+                    );
                 }
+            }
+            UserEvent::Activity => {
+                self.active_until = Some(Instant::now() + Duration::from_millis(1200));
+                if let Some(menu) = self.menu.as_mut() {
+                    update_tray_status(menu, self.tray.as_ref(), &self.app, true);
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    self.active_until.unwrap(),
+                ));
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(deadline) = self.active_until {
+            if Instant::now() >= deadline {
+                self.active_until = None;
+                if let Some(menu) = self.menu.as_mut() {
+                    update_tray_status(menu, self.tray.as_ref(), &self.app, false);
+                }
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
         }
     }
@@ -254,11 +290,26 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
         }
     });
 
+    let proxy = event_loop.create_proxy();
+    let activity = app.activity_seq.clone();
+    runtime.spawn(async move {
+        let mut last = activity.load(Ordering::Relaxed);
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let current = activity.load(Ordering::Relaxed);
+            if current != last {
+                last = current;
+                let _ = proxy.send_event(UserEvent::Activity);
+            }
+        }
+    });
+
     let mut handler = AppHandler {
         app,
         menu: None,
         tray: None,
         failed: false,
+        active_until: None,
     };
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut handler)?;
@@ -271,32 +322,48 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
 fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon)> {
     let (menu, menu_state) = TrayMenu::new()?;
     let icon = load_icon(ICON_OFF)?;
-    let tray = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_icon(icon)
-        .with_tooltip(format!("LanPaster · {}", app.config.load().device_name))
-        .build()?;
+        .with_tooltip(format!("LanPaster · {}", app.config.load().device_name));
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_templated(icon);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_icon(icon);
+    let tray = builder.build()?;
     Ok((menu_state, tray))
 }
 
-fn update_tray_status(menu: &TrayMenu, tray: Option<&TrayIcon>, app: &Arc<AppContext>) {
+fn update_tray_status(
+    menu: &TrayMenu,
+    tray: Option<&TrayIcon>,
+    app: &Arc<AppContext>,
+    active: bool,
+) {
     let enabled = app.sync_enabled.load(Ordering::Relaxed);
     if let Some(tray) = tray {
         let _ = tray.set_tooltip(Some(format!(
-            "LanPaster · {} · {} 台在线 · {}",
+            "LanPaster · {} · {} 台在线 · {}{}",
             app.config.load().device_name,
             menu.online_count,
-            if enabled { "同步开" } else { "同步关" }
+            if enabled { "同步开" } else { "同步关" },
+            if active { " · 收到剪贴" } else { "" }
         )));
-        let icon = if !enabled {
+        let icon = if active {
+            ICON_ACTIVE
+        } else if !enabled || menu.online_count == 0 {
             ICON_OFF
-        } else if menu.online_count > 0 {
-            ICON_ON
         } else {
-            ICON_OFF
+            ICON_ON
         };
         if let Ok(icon) = load_icon(icon) {
-            let _ = tray.set_icon(Some(icon));
+            #[cfg(target_os = "macos")]
+            {
+                let _ = tray.set_icon_templated(Some(icon));
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = tray.set_icon(Some(icon));
+            }
         }
     }
 }

@@ -158,6 +158,7 @@ pub struct AppContext {
     pub seen: Arc<Mutex<SeenEvents>>,
     pub dialed: Arc<Mutex<HashSet<String>>>,
     pub sync_enabled: Arc<AtomicBool>,
+    pub activity_seq: Arc<AtomicU64>,
     conn_seq: AtomicU64,
 }
 
@@ -175,6 +176,7 @@ impl AppContext {
             seen: Arc::new(Mutex::new(SeenEvents::new())),
             dialed: Arc::new(Mutex::new(HashSet::new())),
             sync_enabled: Arc::new(AtomicBool::new(true)),
+            activity_seq: Arc::new(AtomicU64::new(0)),
             conn_seq: AtomicU64::new(1),
         })
     }
@@ -185,6 +187,10 @@ impl AppContext {
 
     pub fn config(&self) -> Arc<Config> {
         self.config.load_full()
+    }
+
+    pub fn notify_activity(&self) {
+        self.activity_seq.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Apply a new config snapshot. Returns fields that still require a restart.
@@ -766,6 +772,7 @@ async fn handle_message(
             };
             if applied {
                 app.seen.lock().await.insert(id);
+                app.notify_activity();
                 if app.config.load().sound_enabled {
                     crate::sound::play();
                 }
