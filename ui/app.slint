@@ -123,6 +123,7 @@ component TextField inherits Rectangle {
 component SettingRow inherits Rectangle {
     in property <string> label;
     in property <string> hint: "";
+    in property <length> field-width: 210px;
     height: 42px;
     background: transparent;
     horizontal-stretch: 1;
@@ -154,7 +155,7 @@ component SettingRow inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
 
         HorizontalBox {
-            width: 210px;
+            width: root.field-width;
             cross-axis-alignment: center;
             @children
         }
@@ -241,6 +242,71 @@ component NavItem inherits Rectangle {
     }
 }
 
+component StackRow inherits VerticalBox {
+    in property <string> label;
+    in property <string> hint: "";
+    spacing: 6px;
+    vertical-stretch: 0;
+    horizontal-stretch: 1;
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+
+    VerticalBox {
+        spacing: 2px;
+        Text {
+            text: root.label;
+            font-size: 13px;
+            color: Theme.text;
+        }
+        if root.hint != "" : Text {
+            text: root.hint;
+            font-size: 11px;
+            color: Theme.secondary;
+            wrap: word-wrap;
+        }
+    }
+
+    @children
+}
+
+component TextArea inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+
+    height: 64px;
+    border-radius: 7px;
+    background: input.has-focus ? Theme.field-focus-bg : Theme.field-bg;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.field-border;
+    clip: true;
+    animate background, border-color { duration: 120ms; }
+
+    input := TextInput {
+        x: 11px;
+        y: 7px;
+        width: root.width - 22px;
+        height: parent.height - 14px;
+        text <=> root.text;
+        single-line: false;
+        wrap: word-wrap;
+        font-size: 12px;
+        color: Theme.text;
+        input-type: InputType.text;
+    }
+
+    if root.text == "" && !input.has-focus : Text {
+        x: 12px;
+        y: 8px;
+        width: parent.width - 24px;
+        text: root.placeholder;
+        font-size: 12px;
+        color: Theme.secondary;
+        wrap: word-wrap;
+    }
+}
+
 export struct ConnectionForm {
     device-name: string,
     psk: string,
@@ -262,7 +328,7 @@ export struct LocalForm {
 export component SettingsWindow inherits Window {
     title: "LanPaster 设置";
     preferred-width: 800px;
-    preferred-height: root.panel == 0 ? 320px : 390px;
+    preferred-height: root.panel == 0 ? 470px : 390px;
     background: Theme.window-bg;
 
     in-out property <int> panel: 0;
@@ -387,10 +453,11 @@ export component SettingsWindow inherits Window {
                         horizontal-stretch: 1;
                         SettingRow {
                             label: "设备名称";
+                            field-width: 320px;
                             TextField { text <=> root.device-name; placeholder: "例如：MacBook Pro"; }
                         }
                         Separator {}
-                        SettingRow {
+                        StackRow {
                             label: "预共享密钥";
                             hint: "所有设备必须一致";
                             TextField { text <=> root.psk; placeholder: "64 位 hex"; password: true; }
@@ -405,10 +472,10 @@ export component SettingsWindow inherits Window {
                     Section {
                         title: "发现与连接";
                         horizontal-stretch: 1;
-                        SettingRow {
+                        StackRow {
                             label: "手动节点";
-                            hint: "mDNS 不可用时使用";
-                            TextField { text <=> root.peers; placeholder: "192.168.1.20:39393, 192.168.1.21:39393"; }
+                            hint: "mDNS 不可用时使用，多个节点用逗号或换行分隔";
+                            TextArea { text <=> root.peers; placeholder: "192.168.1.20:39393, 192.168.1.21:39393"; }
                         }
                         Separator {}
                         ToggleRow {

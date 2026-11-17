@@ -53,7 +53,7 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         let weak = window.as_weak();
         window.on_panel_changed(move |panel| {
             if let Some(window) = weak.upgrade() {
-                let height = if panel == 0 { 320.0 } else { 390.0 };
+                let height = if panel == 0 { 470.0 } else { 390.0 };
                 window
                     .window()
                     .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(
