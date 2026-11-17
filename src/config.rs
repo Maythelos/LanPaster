@@ -11,8 +11,9 @@ use std::{
 pub struct Config {
     pub device_name: String,
     pub device_id: String,
-    /// 32-byte pre-shared key, hex encoded.
-    pub psk: String,
+    /// Persistent X25519 noise identity (32 bytes, hex encoded).
+    pub private_key: String,
+    pub public_key: String,
     pub listen_port: u16,
     pub poll_interval_ms: u64,
     pub max_text_kb: u64,
@@ -37,7 +38,8 @@ impl Default for Config {
                 .filter(|h| !h.is_empty())
                 .unwrap_or_else(|| "LanPaster".to_string()),
             device_id: String::new(),
-            psk: String::new(),
+            private_key: String::new(),
+            public_key: String::new(),
             listen_port: 39393,
             poll_interval_ms: 500,
             max_text_kb: 1024,
@@ -82,8 +84,10 @@ impl Config {
             cfg.device_id = random_hex(8);
             changed = true;
         }
-        if cfg.psk.trim().is_empty() {
-            cfg.psk = random_hex(32);
+        if cfg.private_key.trim().is_empty() || cfg.public_key.trim().is_empty() {
+            let (private, public) = crate::crypto::generate_identity();
+            cfg.private_key = private;
+            cfg.public_key = public;
             changed = true;
         }
         if cfg.device_name.trim().is_empty() {
@@ -121,19 +125,20 @@ impl Config {
         Ok(())
     }
 
-    pub fn psk_bytes(&self) -> Result<Vec<u8>> {
-        let bytes = hex::decode(self.psk.trim()).context("psk must be hex")?;
-        if bytes.len() != 32 {
-            bail!("psk must be 32 bytes (64 hex chars), got {}", bytes.len());
-        }
-        Ok(bytes)
+    pub fn private_key_bytes(&self) -> Result<Vec<u8>> {
+        decode_key(&self.private_key, "private_key")
+    }
+
+    pub fn public_key_bytes(&self) -> Result<Vec<u8>> {
+        decode_key(&self.public_key, "public_key")
     }
 
     pub fn validate(&self) -> Result<()> {
         if self.listen_port == 0 {
             bail!("listen_port must not be 0");
         }
-        self.psk_bytes()?;
+        self.private_key_bytes()?;
+        self.public_key_bytes()?;
         if self.max_text_kb == 0
             || self.max_file_mb == 0
             || self.max_batch_mb == 0
@@ -155,6 +160,14 @@ impl Config {
     pub fn max_batch_bytes(&self) -> u64 {
         self.max_batch_mb.saturating_mul(1024 * 1024)
     }
+}
+
+fn decode_key(value: &str, name: &str) -> Result<Vec<u8>> {
+    let bytes = hex::decode(value.trim()).with_context(|| format!("{name} must be hex"))?;
+    if bytes.len() != 32 {
+        bail!("{name} must be 32 bytes (64 hex chars), got {}", bytes.len());
+    }
+    Ok(bytes)
 }
 
 pub fn config_path() -> PathBuf {

@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::protocol::{decode_message, encode_message, Message, MAX_FRAME};
 
-const NOISE_PARAMS: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
+const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 pub struct SecureReader {
     reader: ReadHalf<TcpStream>,
@@ -22,16 +22,21 @@ pub struct SecureWriter {
     noise: Arc<Mutex<TransportState>>,
 }
 
+pub fn generate_identity() -> (String, String) {
+    let params: NoiseParams = NOISE_PARAMS.parse().expect("valid noise params");
+    let builder = Builder::new(params);
+    let keypair = builder.generate_keypair().expect("generate noise keypair");
+    (hex::encode(keypair.private), hex::encode(keypair.public))
+}
+
 pub async fn handshake(
     stream: TcpStream,
-    psk: &[u8],
+    private_key: &[u8],
     initiator: bool,
-) -> Result<(SecureReader, SecureWriter)> {
+) -> Result<(SecureReader, SecureWriter, Vec<u8>)> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let params: NoiseParams = NOISE_PARAMS.parse().context("parse noise params")?;
-    let builder = Builder::new(params).psk(3, psk);
-    let keypair = builder.generate_keypair().context("generate noise keypair")?;
-    let builder = builder.local_private_key(&keypair.private);
+    let builder = Builder::new(params).local_private_key(private_key);
     let mut state = if initiator {
         builder.build_initiator().context("build noise initiator")?
     } else {
@@ -64,6 +69,10 @@ pub async fn handshake(
         bail!("noise handshake did not finish");
     }
     let transport = state.into_transport_mode().context("enter noise transport mode")?;
+    let remote_static = transport
+        .get_remote_static()
+        .context("noise handshake did not expose remote static key")?
+        .to_vec();
     let noise = Arc::new(Mutex::new(transport));
     Ok((
         SecureReader {
@@ -71,6 +80,7 @@ pub async fn handshake(
             noise: noise.clone(),
         },
         SecureWriter { writer, noise },
+        remote_static,
     ))
 }
 

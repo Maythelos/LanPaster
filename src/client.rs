@@ -5,7 +5,8 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use std::{io::Read, path::Path};
-use tokio::net::TcpStream;
+use std::time::Duration;
+use tokio::{net::TcpStream, time::timeout};
 
 pub async fn send_text(config: &Config, addr: &str, text: String) -> Result<()> {
     let bytes = text.into_bytes();
@@ -102,11 +103,12 @@ async fn send_event(
     kind: ClipKind,
     items: Vec<(ItemMeta, Vec<u8>)>,
 ) -> Result<()> {
-    let psk = config.psk_bytes()?;
+    let private_key = config.private_key_bytes()?;
     let stream = TcpStream::connect(addr)
         .await
         .with_context(|| format!("connect {addr}"))?;
-    let (mut reader, mut writer) = handshake(stream, &psk, true).await?;
+    let (mut reader, mut writer, _remote_static) =
+        handshake(stream, &private_key, true).await?;
 
     writer
         .send(&Message::Hello {
@@ -115,10 +117,16 @@ async fn send_event(
             version: PROTOCOL_VERSION,
         })
         .await?;
-    match reader.recv().await? {
-        Message::Hello { device_name, .. } => println!("connected to {device_name}"),
+    let (remote_id, remote_name) = match reader.recv().await? {
+        Message::Hello {
+            device_id,
+            device_name,
+            ..
+        } => (device_id, device_name),
         other => bail!("expected hello, got {other:?}"),
-    }
+    };
+    println!("connected to {remote_name}");
+    pair_client(config, &mut reader, &mut writer, &remote_id, &remote_name).await?;
 
     let id = crate::config::random_u64();
     let total_size: u64 = items.iter().map(|(meta, _)| meta.size).sum();
@@ -178,6 +186,48 @@ async fn send_event(
             Message::Ping => writer.send(&Message::Pong).await?,
             Message::Pong => {}
             other => bail!("unexpected ack: {other:?}"),
+        }
+    }
+}
+
+async fn pair_client(
+    config: &Config,
+    reader: &mut crate::crypto::SecureReader,
+    writer: &mut crate::crypto::SecureWriter,
+    remote_id: &str,
+    remote_name: &str,
+) -> Result<()> {
+    if config.device_id.as_str() < remote_id {
+        writer.send(&Message::PairRequest).await?;
+        loop {
+            let msg = timeout(Duration::from_secs(120), reader.recv())
+                .await
+                .context("pairing timed out")??;
+            match msg {
+                Message::PairAccepted => {
+                    println!("pairing approved by {remote_name}");
+                    return Ok(());
+                }
+                Message::PairDenied { reason } => bail!("pairing denied: {reason}"),
+                Message::PairPending => println!("waiting for {remote_name} to approve"),
+                Message::Ping => writer.send(&Message::Pong).await?,
+                other => bail!("unexpected pairing message: {other:?}"),
+            }
+        }
+    }
+
+    loop {
+        let msg = timeout(Duration::from_secs(120), reader.recv())
+            .await
+            .context("pairing request timed out")??;
+        match msg {
+            Message::PairRequest => {
+                writer.send(&Message::PairAccepted).await?;
+                println!("pairing request from {remote_name} approved (CLI)");
+                return Ok(());
+            }
+            Message::Ping => writer.send(&Message::Pong).await?,
+            other => bail!("expected pairing request, got {other:?}"),
         }
     }
 }

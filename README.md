@@ -2,7 +2,7 @@
 
 局域网剪贴板同步工具的可运行版本。
 
-当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、单窗口设置中心（Cupertino 风格，左侧连接 / 本地）、提示音、开机自启、单实例和配置热加载。
+当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、设备身份 + 首次连接批准、mDNS 主动扫描、请求连接、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、单窗口设置中心（Cupertino 风格，左侧连接 / 本地）、提示音、开机自启、单实例和配置热加载。
 
 ## 已实现
 
@@ -15,19 +15,22 @@
   - 文件名清洗、防路径穿越、重名加后缀、不覆盖、不自动执行
   - 单文件 / 单次总量 / 文件数量上限
 - 连接与安全：
-  - TCP P2P，Noise `XXpsk3` 握手（`snow`），PSK 双向认证
+  - TCP P2P，Noise `XX` 握手（`snow`），持久 X25519 设备身份
+  - 首次连接由一方发起请求，另一方在托盘“连接请求”里点击“同意”或“拒绝”
+  - 批准后写入本地 `trusted.toml`，后续自动连接，不再重复确认
   - 每连接心跳、断线重连
   - 双向拨号去重（按设备 ID 选 canonical 连接），避免连接风暴
-  - mDNS 自动发现（`mdns-sd`），TXT 只放设备 ID / 名称 / 协议版本，不放密钥
+  - mDNS 主动扫描（`mdns-sd`），TXT 只放设备 ID / 名称 / 协议版本
   - 手动 `peers = ["host:port"]` 兜底
 - 本地配置：`~/Library/Application Support/LanPaster/config.toml`（macOS）、`~/.config/LanPaster/config.toml`（Linux）、`%APPDATA%\LanPaster\config.toml`（Windows）
-- 首次运行生成 32 字节随机 PSK 和设备 ID；配置权限 0600
+- 首次运行生成设备 ID、持久 X25519 身份密钥；配置和信任文件权限 0600
 - 循环抑制：本地事件指纹 + 远端写入后的下一次轮询抑制 + 事件 ID 去重
 - 原生系统托盘（`tray-icon` + `muda` + `winit`）：
   - 菜单栏图标：实心 LP 字母 + 圆角方框，macOS template 图标，自动适配深浅色；离线 / 在线 / 收到剪贴三种状态
   - 启用 / 暂停剪贴同步（勾选菜单项）
+  - 连接请求子菜单：同意 / 拒绝
   - 在线设备子菜单，自动刷新
-  - 打开配置面板
+  - 打开设置中心
   - 推送当前剪贴板
   - 退出程序
   - macOS 使用 Accessory 激活策略，不显示 Dock 图标
@@ -36,7 +39,7 @@
 - 提示音：收到远端剪贴后播放短提示音；托盘菜单“测试提示音”，配置面板可关闭
 - 开机自启：macOS LaunchAgent、Windows 注册表 Run、Linux XDG autostart；托盘菜单可勾选，也可用 CLI
 - 单实例：按配置文件路径加文件锁；同一配置只允许一个守护进程
-- 配置热加载：阈值、文件同步、提示音、轮询间隔修改后自动生效；端口、密钥、mDNS、手动节点仍需重启
+- 配置热加载：阈值、文件同步、提示音、轮询间隔修改后自动生效；端口、mDNS、手动节点、设备身份仍需重启
 - 剪贴板监听优化：优先使用 `clipboard-rs` 平台 watcher（macOS 实测生效），失败时退回轮询；watcher 有效时保留 10 秒兜底轮询
 - 接收文件缓存：按 `cache_max_mb` 自动删除旧事件目录，保留最新一次文件剪贴
 
@@ -62,10 +65,10 @@ cargo build --release
 ```
 config: /Users/xxx/Library/Application Support/LanPaster/config.toml
 device: my-mac (xxxxxxxxxxxxxxxx)
-psk:    0123...（64 位 hex）
+fingerprint: A1B2C3D4E5F60708
 ```
 
-把同一个 `psk` 配置到其他设备；每台设备的 `device_id` 必须不同（留空会自动生成），`listen_port` 不能冲突。
+每台设备的 `device_id` 和身份密钥必须不同（留空会自动生成），`listen_port` 不能冲突。不要把 config.toml 复制到另一台设备，否则会复制同一份设备身份。
 
 ## 运行
 
@@ -84,7 +87,7 @@ psk:    0123...（64 位 hex）
 单独打开设置中心（托盘菜单里“连接设置”和“本地设置”会直接定位到对应页）：
 
 ```bash
-# 打开连接页：设备名、PSK、端口、mDNS、手动节点
+# 打开连接页：设备名、设备指纹、端口、mDNS、手动节点
 ./target/release/lanpaster ui connection
 
 # 打开本地页：轮询、文本/文件大小、文件同步、提示音
@@ -92,6 +95,14 @@ psk:    0123...（64 位 hex）
 ```
 
 不传参数时默认打开连接页。
+
+首次连接流程：
+
+1. 两台设备都启动 LanPaster，保持同一局域网；
+2. 自动扫描到对方后发起连接；
+3. 接收方托盘菜单出现“连接请求”，展开后点击“同意”；
+4. 批准后保存到 `config.trusted.toml`（与配置文件同目录），后续自动连接；
+5. 如果对端重装或身份密钥变化，会重新请求确认。
 
 提示音测试与开机自启：
 
@@ -155,7 +166,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 ./target/release/lanpaster send-image 192.168.1.20:39393 ./photo.jpg
 ```
 
-发送命令使用当前配置里的 PSK 和设备 ID；可以复制一份配置，修改 `device_id` / `device_name` 作为测试客户端。
+发送命令使用当前配置里的设备身份；如果对方尚未信任，需要对方在托盘确认。
 
 ## 配置项
 
@@ -163,7 +174,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 |---|---:|---|
 | `device_name` | 主机名 | 对端显示名称 |
 | `device_id` | 自动生成 | 设备唯一 ID，不要与其他设备重复 |
-| `psk` | 自动生成 | 32 字节 hex，所有设备必须一致 |
+| `private_key` / `public_key` | 自动生成 | X25519 设备身份，不要复制或分享 |
 | `listen_port` | 39393 | TCP 监听端口 |
 | `poll_interval_ms` | 500 | 剪贴板轮询间隔 |
 | `max_text_kb` | 1024 | 单条文本上限 |
@@ -191,7 +202,8 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 
 ## 安全说明
 
-- PSK 只本地保存，不通过 mDNS 或网络明文传输。
+- 设备身份私钥只本地保存，不通过 mDNS 或网络明文传输。
+- 首次连接必须由对方在托盘确认；批准记录保存在 `config.trusted.toml`。
 - 配置文件和接收目录权限分别设为 0600 / 0700（Unix）。
 - 接收端不自动打开文件，不保留可执行 / setuid 权限。
 - 自用工具，未做系统级密钥链存储、证书固定、审计日志等。
@@ -199,7 +211,8 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 ## 代码结构
 
 - `src/main.rs`：CLI、启动流程
-- `src/config.rs`：配置、默认值、PSK/设备 ID
+- `src/config.rs`：配置、默认值、设备身份 / ID
+- `src/pairing.rs`：首次连接请求、信任设备持久化
 - `src/clipboard.rs`：剪贴板轮询、图片格式选择、文件元数据、远端写入
 - `src/protocol.rs`：消息定义、bincode 编解码、chunk 大小
 - `src/crypto.rs`：Noise 握手与加密帧
@@ -225,7 +238,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 - 两个守护进程通过 mDNS 自动发现并稳定连接
 - 两个守护进程通过手动 `peers` 直连
 - 超过 `max_file_mb` 的文件被拒绝，客户端收到 Reject
-- PSK 不一致时握手失败
+- 首次连接请求、托盘同意后写入 trusted.toml，后续自动连接
 - 原生托盘启动、设备列表更新、菜单事件路径
 - 配置面板独立进程启动
 - 提示音命令、开机自启写入/移除
@@ -246,6 +259,6 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 
 1. Windows / Linux 实机验证与打包
 2. macOS 公证 / Developer ID 签名（可选）
-3. 配置热加载扩展到端口 / PSK / mDNS / 手动节点
+3. 配置热加载扩展到端口 / mDNS / 手动节点
 4. 剪贴历史、设备管理
 5. 目录同步 / 断点续传

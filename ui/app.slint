@@ -67,6 +67,7 @@ component TextField inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder;
     in property <bool> password: false;
+    in property <bool> read-only: false;
     in-out property <bool> reveal: false;
 
     height: 30px;
@@ -87,6 +88,7 @@ component TextField inherits Rectangle {
         color: Theme.text;
         vertical-alignment: center;
         input-type: root.password && !root.reveal ? InputType.password : InputType.text;
+        read-only: root.read-only;
     }
 
     if root.text == "" && !input.has-focus : Text {
@@ -309,7 +311,6 @@ component TextArea inherits Rectangle {
 
 export struct ConnectionForm {
     device-name: string,
-    psk: string,
     listen-port: string,
     mdns-enabled: bool,
     peers: string,
@@ -332,7 +333,7 @@ export component SettingsWindow inherits Window {
     in-out property <int> panel: 0;
     in-out property <string> app-version: "";
     in-out property <string> device-name: "";
-    in-out property <string> psk: "";
+    in-out property <string> fingerprint: "";
     in-out property <string> listen-port: "";
     in-out property <bool> mdns-enabled: true;
     in-out property <string> peers: "";
@@ -453,9 +454,9 @@ export component SettingsWindow inherits Window {
                         }
                         Separator {}
                         StackRow {
-                            label: "预共享密钥";
-                            hint: "所有设备必须一致";
-                            TextField { text <=> root.psk; placeholder: "64 位 hex"; password: true; }
+                            label: "设备指纹";
+                            hint: "首次连接时请核对对方设备上的指纹";
+                            TextField { text <=> root.fingerprint; read-only: true; }
                         }
                         Separator {}
                         SettingRow {
@@ -559,7 +560,6 @@ export component SettingsWindow inherits Window {
                         clicked => {
                             root.save-connection({
                                 device-name: root.device-name,
-                                psk: root.psk,
                                 listen-port: root.listen-port,
                                 mdns-enabled: root.mdns-enabled,
                                 peers: root.peers,

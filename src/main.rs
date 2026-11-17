@@ -7,6 +7,7 @@ mod crypto;
 mod instance;
 mod mdns;
 mod net;
+mod pairing;
 mod protocol;
 mod sound;
 mod tray;
@@ -157,8 +158,11 @@ fn init() -> Result<()> {
     cfg.validate()?;
     println!("config: {}", path.display());
     println!("device: {} ({})", cfg.device_name, cfg.device_id);
-    println!("psk:    {}", cfg.psk);
-    println!("\nCopy the psk to other devices, or copy this config file.");
+    println!(
+        "fingerprint: {}",
+        pairing::PairingManager::fingerprint(&cfg.public_key_bytes()?)
+    );
+    println!("\nOther devices will ask for approval on first connection.");
     Ok(())
 }
 
@@ -184,7 +188,10 @@ fn run(args: &[String]) -> Result<()> {
 
     info!("config: {}", path.display());
     info!("device: {} ({})", cfg.device_name, cfg.device_id);
-    info!("psk:    {}", cfg.psk);
+    info!(
+        "fingerprint: {}",
+        pairing::PairingManager::fingerprint(&cfg.public_key_bytes()?)
+    );
     info!("listening port: {}", cfg.listen_port);
     if cfg.peers.is_empty() {
         info!("no manual peers configured; add peers = [\"192.168.1.10:39393\"] to config");
@@ -227,7 +234,9 @@ async fn start_services(cfg: Config, config_path: PathBuf) -> Result<Arc<AppCont
     let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
     let clipboard_cmd = clipboard::spawn(config.clone(), local_tx)
         .map_err(|e| anyhow::anyhow!("clipboard thread: {e}"))?;
-    let app = Arc::new(AppContext::new(config, clipboard_cmd)?);
+    let trusted_path = config_path.with_extension("trusted.toml");
+    let pairing = Arc::new(pairing::PairingManager::new(trusted_path)?);
+    let app = Arc::new(AppContext::new(config, clipboard_cmd, pairing)?);
 
     for peer in &cfg.peers {
         app.ensure_dial(peer.clone()).await;

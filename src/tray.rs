@@ -1,8 +1,12 @@
-use crate::{clipboard::ClipboardCommand, net::AppContext};
+use crate::{
+    clipboard::ClipboardCommand,
+    net::AppContext,
+    pairing::PendingInfo,
+};
 use anyhow::{Context, Result};
-use std::sync::{
-    atomic::Ordering,
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{atomic::Ordering, Arc},
 };
 use std::time::{Duration, Instant};
 use tray_icon::{
@@ -25,12 +29,16 @@ enum UserEvent {
     Menu(MenuId),
     OpenConfig(&'static str),
     Peers(Vec<(String, String)>),
+    Pairing(Vec<PendingInfo>),
     Activity,
 }
 
 struct TrayMenu {
     sync: CheckMenuItem,
     autostart: CheckMenuItem,
+    requests: Submenu,
+    request_items: Vec<MenuItem>,
+    request_actions: HashMap<String, (String, bool)>,
     devices: Submenu,
     device_items: Vec<MenuItem>,
     connection: MenuItem,
@@ -53,6 +61,12 @@ impl TrayMenu {
         );
         menu.append(&sync)?;
         menu.append(&autostart)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        let requests = Submenu::new("连接请求 (0)", true);
+        let request_placeholder = MenuItem::new("无待处理请求", false, None);
+        requests.append(&request_placeholder)?;
+        menu.append(&requests)?;
         menu.append(&PredefinedMenuItem::separator())?;
 
         let devices = Submenu::new("在线设备 (0)", true);
@@ -80,6 +94,9 @@ impl TrayMenu {
             Self {
                 sync,
                 autostart,
+                requests,
+                request_items: vec![request_placeholder],
+                request_actions: HashMap::new(),
                 devices,
                 device_items: vec![placeholder],
                 connection,
@@ -90,6 +107,37 @@ impl TrayMenu {
                 online_count: 0,
             },
         ))
+    }
+
+    fn update_requests(&mut self, pending: &[PendingInfo]) {
+        for item in self.request_items.drain(..) {
+            let _ = self.requests.remove(&item);
+        }
+        self.request_actions.clear();
+        if pending.is_empty() {
+            let item = MenuItem::new("无待处理请求", false, None);
+            let _ = self.requests.append(&item);
+            self.request_items.push(item);
+        } else {
+            for request in pending {
+                let approve = MenuItem::new(
+                    format!("同意：{} ({})", request.name, request.fingerprint),
+                    true,
+                    None,
+                );
+                self.request_actions
+                    .insert(approve.id().as_ref().to_string(), (request.key.clone(), true));
+                let _ = self.requests.append(&approve);
+                self.request_items.push(approve);
+
+                let deny = MenuItem::new(format!("拒绝：{}", request.name), true, None);
+                self.request_actions
+                    .insert(deny.id().as_ref().to_string(), (request.key.clone(), false));
+                let _ = self.requests.append(&deny);
+                self.request_items.push(deny);
+            }
+        }
+        self.requests.set_text(format!("连接请求 ({})", pending.len()));
     }
 
     fn update_devices(&mut self, peers: &[(String, String)]) {
@@ -157,6 +205,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let Some(menu) = self.menu.as_mut() else {
                     return;
                 };
+                if let Some((key, approve)) = menu.request_actions.get(id.as_ref()).cloned() {
+                    if approve {
+                        let _ = self.app.pairing.approve(&key);
+                    } else {
+                        let _ = self.app.pairing.deny(&key);
+                    }
+                    menu.update_requests(&self.app.pairing.pending_list());
+                    return;
+                }
                 if id == *menu.sync.id() {
                     let enabled = !self.app.sync_enabled.load(Ordering::Relaxed);
                     self.app.sync_enabled.store(enabled, Ordering::Relaxed);
@@ -196,6 +253,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
             }
             UserEvent::OpenConfig(panel) => open_config_window(panel),
+            UserEvent::Pairing(pending) => {
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.update_requests(&pending);
+                }
+            }
             UserEvent::Peers(peers) => {
                 debug!("tray device update: {} peer(s)", peers.len());
                 if let Some(menu) = self.menu.as_mut() {
@@ -301,6 +363,26 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
                 last = current;
                 let _ = proxy.send_event(UserEvent::Activity);
             }
+        }
+    });
+
+    let proxy = event_loop.create_proxy();
+    let pairing = app.pairing.clone();
+    runtime.spawn(async move {
+        let mut last_key = String::new();
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let pending = pairing.pending_list();
+            let key = pending
+                .iter()
+                .map(|p| format!("{}\u{1f}{}\u{1f}{}", p.key, p.name, p.fingerprint))
+                .collect::<Vec<_>>()
+                .join("\u{1e}");
+            if key == last_key {
+                continue;
+            }
+            last_key = key;
+            let _ = proxy.send_event(UserEvent::Pairing(pending));
         }
     });
 

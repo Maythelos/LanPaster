@@ -1,6 +1,6 @@
 slint::include_modules!();
 
-use crate::config::Config;
+use crate::{config::Config, pairing::PairingManager};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -66,7 +66,7 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
                 apply_status(
                     &window,
                     result,
-                    "已保存；端口/PSK/mDNS/节点需重启，设备名已热加载",
+                    "已保存；端口/mDNS/节点需重启，设备名已热加载",
                 );
             }
         });
@@ -106,7 +106,13 @@ fn apply_status(window: &SettingsWindow, result: Result<()>, success: &str) {
 
 fn fill_form(window: &SettingsWindow, config: &Config) {
     window.set_device_name(config.device_name.clone().into());
-    window.set_psk(config.psk.clone().into());
+    window.set_fingerprint(
+        config
+            .public_key_bytes()
+            .map(|key| PairingManager::fingerprint(&key))
+            .unwrap_or_default()
+            .into(),
+    );
     window.set_listen_port(config.listen_port.to_string().into());
     window.set_mdns_enabled(config.mdns_enabled);
     window.set_peers(config.peers.join(", ").into());
@@ -125,7 +131,6 @@ fn save_connection(path: &std::path::Path, fallback: &Config, form: &ConnectionF
     if cfg.device_name.is_empty() {
         anyhow::bail!("设备名称不能为空");
     }
-    cfg.psk = form.psk.trim().to_string();
     cfg.listen_port = parse_u16(&form.listen_port, "监听端口")?;
     cfg.mdns_enabled = form.mdns_enabled;
     cfg.peers = parse_peers(&form.peers);
@@ -202,7 +207,6 @@ mod tests {
         let base = Config::default();
         let form = ConnectionForm {
             device_name: "test-mac".into(),
-            psk: "ab".repeat(32).into(),
             listen_port: "40000".into(),
             mdns_enabled: false,
             peers: "127.0.0.1:40001, 127.0.0.1:40002".into(),
@@ -212,7 +216,9 @@ mod tests {
             crate::config::random_hex(4)
         ));
         let mut initial = base.clone();
-        initial.psk = form.psk.to_string();
+        let (private, public) = crate::crypto::generate_identity();
+        initial.private_key = private;
+        initial.public_key = public;
         initial.save(&path).unwrap();
         save_connection(&path, &initial, &form).unwrap();
         let cfg = Config::load_from(&path).unwrap();
@@ -240,7 +246,9 @@ mod tests {
             crate::config::random_hex(4)
         ));
         let mut initial = base.clone();
-        initial.psk = "ab".repeat(32);
+        let (private, public) = crate::crypto::generate_identity();
+        initial.private_key = private;
+        initial.public_key = public;
         initial.save(&path).unwrap();
         save_local(&path, &initial, &form).unwrap();
         let cfg = Config::load_from(&path).unwrap();

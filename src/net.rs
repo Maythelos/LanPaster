@@ -2,6 +2,7 @@ use crate::{
     clipboard::{ClipboardCommand, LocalClipboard, RemoteClipboard},
     config::{incoming_dir, Config},
     crypto::handshake,
+    pairing::PairingManager,
     protocol::{sha256, ClipKind, ItemMeta, Message, CHUNK_SIZE, PROTOCOL_VERSION},
 };
 use anyhow::{bail, Context, Result};
@@ -152,7 +153,7 @@ impl Default for SeenEvents {
 
 pub struct AppContext {
     pub config: Arc<ArcSwap<Config>>,
-    pub psk: Arc<Vec<u8>>,
+    pub pairing: Arc<PairingManager>,
     pub peers: Arc<PeerManager>,
     pub clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
     pub seen: Arc<Mutex<SeenEvents>>,
@@ -166,11 +167,11 @@ impl AppContext {
     pub fn new(
         config: Arc<ArcSwap<Config>>,
         clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
+        pairing: Arc<PairingManager>,
     ) -> Result<Self> {
-        let psk = Arc::new(config.load().psk_bytes()?);
         Ok(Self {
             config,
-            psk,
+            pairing,
             peers: Arc::new(PeerManager::new()),
             clipboard_cmd,
             seen: Arc::new(Mutex::new(SeenEvents::new())),
@@ -200,8 +201,8 @@ impl AppContext {
         if old.listen_port != new.listen_port {
             restart.push("listen_port");
         }
-        if old.psk != new.psk {
-            restart.push("psk");
+        if old.private_key != new.private_key || old.public_key != new.public_key {
+            restart.push("identity");
         }
         if old.mdns_enabled != new.mdns_enabled {
             restart.push("mdns_enabled");
@@ -527,9 +528,11 @@ async fn dial_loop(addr: String, app: Arc<AppContext>) {
 
 async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>) -> Result<bool> {
     stream.set_nodelay(true).ok();
-    let (mut reader, mut writer) = handshake(stream, &app.psk, initiator).await?;
-
     let local = app.config.load_full();
+    let private_key = local.private_key_bytes()?;
+    let (mut reader, mut writer, remote_static) =
+        handshake(stream, &private_key, initiator).await?;
+
     writer
         .send(&Message::Hello {
             device_id: local.device_id.clone(),
@@ -553,6 +556,17 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     if remote_id == local.device_id {
         bail!("refusing connection to self");
     }
+
+    pair_session(
+        &app,
+        &mut reader,
+        &mut writer,
+        &local,
+        &remote_id,
+        &remote_name,
+        &remote_static,
+    )
+    .await?;
 
     let (tx, mut rx) = mpsc::channel::<Message>(128);
     let pending = Arc::new(Mutex::new(HashMap::<u64, mpsc::Sender<Control>>::new()));
@@ -645,6 +659,92 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     result.map(|_| true)
 }
 
+const PAIR_TIMEOUT: Duration = Duration::from_secs(120);
+
+async fn pair_session(
+    app: &Arc<AppContext>,
+    reader: &mut crate::crypto::SecureReader,
+    writer: &mut crate::crypto::SecureWriter,
+    local: &Config,
+    remote_id: &str,
+    remote_name: &str,
+    remote_static: &[u8],
+) -> Result<()> {
+    let remote_key = hex::encode(remote_static);
+    let fingerprint = PairingManager::fingerprint(remote_static);
+    let auto_approve = std::env::var_os("LANPASTER_AUTO_APPROVE").is_some();
+    let requester = local.device_id.as_str() < remote_id;
+
+    if requester {
+        info!("requesting pairing with {remote_name} ({fingerprint})");
+        writer.send(&Message::PairRequest).await?;
+        loop {
+            let msg = timeout(PAIR_TIMEOUT, reader.recv())
+                .await
+                .context("pairing timed out")??;
+            match msg {
+                Message::PairAccepted => {
+                    app.pairing.trust(remote_id, remote_name, &remote_key)?;
+                    info!("paired with {remote_name} ({fingerprint})");
+                    return Ok(());
+                }
+                Message::PairDenied { reason } => bail!("pairing denied: {reason}"),
+                Message::PairPending => info!("waiting for {remote_name} to approve"),
+                Message::Ping => writer.send(&Message::Pong).await?,
+                other => bail!("unexpected pairing message: {other:?}"),
+            }
+        }
+    }
+
+    info!("waiting for pairing request from {remote_name} ({fingerprint})");
+    loop {
+        let msg = timeout(PAIR_TIMEOUT, reader.recv())
+            .await
+            .context("pairing request timed out")??;
+        match msg {
+            Message::PairRequest => {
+                if auto_approve
+                    || app
+                        .pairing
+                        .is_trusted(remote_id, &remote_key)
+                {
+                    app.pairing.trust(remote_id, remote_name, &remote_key)?;
+                    writer.send(&Message::PairAccepted).await?;
+                    info!("paired with {remote_name} ({fingerprint})");
+                    return Ok(());
+                }
+
+                let (pending_key, mut decision) =
+                    app.pairing.request(remote_id, remote_name, &remote_key);
+                writer.send(&Message::PairPending).await?;
+                match timeout(PAIR_TIMEOUT, decision.recv()).await {
+                    Ok(Ok(true)) => {
+                        app.pairing.trust(remote_id, remote_name, &remote_key)?;
+                        writer.send(&Message::PairAccepted).await?;
+                        info!("paired with {remote_name} ({fingerprint})");
+                        return Ok(());
+                    }
+                    Ok(Ok(false)) | Err(_) => {
+                        app.pairing.cancel(&pending_key);
+                        let _ = writer
+                            .send(&Message::PairDenied {
+                                reason: "rejected by user".to_string(),
+                            })
+                            .await;
+                        bail!("pairing rejected by user");
+                    }
+                    Ok(Err(err)) => {
+                        app.pairing.cancel(&pending_key);
+                        bail!("pairing channel closed: {err}");
+                    }
+                }
+            }
+            Message::Ping => writer.send(&Message::Pong).await?,
+            other => bail!("expected pairing request, got {other:?}"),
+        }
+    }
+}
+
 async fn handle_message(
     msg: Message,
     app: &Arc<AppContext>,
@@ -658,6 +758,10 @@ async fn handle_message(
             let _ = tx.send(Message::Pong).await;
         }
         Message::Pong => {}
+        Message::PairRequest
+        | Message::PairPending
+        | Message::PairAccepted
+        | Message::PairDenied { .. } => bail!("unexpected pairing message after pairing"),
         Message::Hello { .. } => bail!("unexpected hello"),
         Message::Ready { id } => dispatch(pending, id, Control::Ready).await,
         Message::Reject { id, reason } => dispatch(pending, id, Control::Reject(reason)).await,

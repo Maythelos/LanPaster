@@ -71,6 +71,12 @@ pub enum Message {
         ok: bool,
         reason: String,
     },
+    PairRequest,
+    PairPending,
+    PairAccepted,
+    PairDenied {
+        reason: String,
+    },
     Ping,
     Pong,
 }
