@@ -28,10 +28,12 @@ enum UserEvent {
 
 struct TrayMenu {
     sync: CheckMenuItem,
+    autostart: CheckMenuItem,
     devices: Submenu,
     device_items: Vec<MenuItem>,
     open: MenuItem,
     push: MenuItem,
+    test_sound: MenuItem,
     quit: MenuItem,
     online_count: usize,
 }
@@ -40,7 +42,14 @@ impl TrayMenu {
     fn new() -> Result<(Menu, Self)> {
         let menu = Menu::new();
         let sync = CheckMenuItem::new("启用剪贴同步", true, true, None);
+        let autostart = CheckMenuItem::new(
+            "开机自启",
+            true,
+            crate::autostart::is_enabled(),
+            None,
+        );
         menu.append(&sync)?;
+        menu.append(&autostart)?;
         menu.append(&PredefinedMenuItem::separator())?;
 
         let devices = Submenu::new("在线设备 (0)", true);
@@ -50,9 +59,11 @@ impl TrayMenu {
 
         let open = MenuItem::new("打开配置面板", true, None);
         let push = MenuItem::new("推送当前剪贴板", true, None);
+        let test_sound = MenuItem::new("测试提示音", true, None);
         let quit = MenuItem::new("退出 LanPaster", true, None);
         menu.append(&open)?;
         menu.append(&push)?;
+        menu.append(&test_sound)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit)?;
 
@@ -62,10 +73,12 @@ impl TrayMenu {
             menu,
             Self {
                 sync,
+                autostart,
                 devices,
                 device_items: vec![placeholder],
                 open,
                 push,
+                test_sound,
                 quit,
                 online_count: 0,
             },
@@ -144,12 +157,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         let _ = self.app.clipboard_cmd.send(ClipboardCommand::Push);
                     }
                     update_tray_status(menu, self.tray.as_ref(), &self.app);
+                } else if id == *menu.autostart.id() {
+                    let enabled = !crate::autostart::is_enabled();
+                    match crate::autostart::set(enabled) {
+                        Ok(()) => menu.autostart.set_checked(enabled),
+                        Err(err) => {
+                            warn!("failed to update autostart: {err:#}");
+                            menu.autostart
+                                .set_checked(crate::autostart::is_enabled());
+                        }
+                    }
                 } else if id == *menu.open.id() {
                     open_config_window();
                 } else if id == *menu.push.id() {
                     if self.app.sync_enabled.load(Ordering::Relaxed) {
                         let _ = self.app.clipboard_cmd.send(ClipboardCommand::Push);
                     }
+                } else if id == *menu.test_sound.id() {
+                    crate::sound::play();
                 } else if id == *menu.quit.id() {
                     info!("quit requested from tray");
                     event_loop.exit();
@@ -206,11 +231,14 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
                 .map(|p| (p.device_name.clone(), p.device_id.clone()))
                 .collect();
             list.sort();
-            let key = list
-                .iter()
-                .map(|(n, id)| format!("{n}\u{1f}{id}"))
-                .collect::<Vec<_>>()
-                .join("\u{1e}");
+            let device_name = peer_app.config.load().device_name.clone();
+            let key = format!(
+                "{device_name}\u{1d}{}",
+                list.iter()
+                    .map(|(n, id)| format!("{n}\u{1f}{id}"))
+                    .collect::<Vec<_>>()
+                    .join("\u{1e}")
+            );
             if key == last_key {
                 continue;
             }
@@ -239,7 +267,7 @@ fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon)> {
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(icon)
-        .with_tooltip(format!("LanPaster · {}", app.config.device_name))
+        .with_tooltip(format!("LanPaster · {}", app.config.load().device_name))
         .build()?;
     Ok((menu_state, tray))
 }
@@ -249,7 +277,7 @@ fn update_tray_status(menu: &TrayMenu, tray: Option<&TrayIcon>, app: &Arc<AppCon
     if let Some(tray) = tray {
         let _ = tray.set_tooltip(Some(format!(
             "LanPaster · {} · {} 台在线 · {}",
-            app.config.device_name,
+            app.config.load().device_name,
             menu.online_count,
             if enabled { "同步开" } else { "同步关" }
         )));

@@ -12,6 +12,7 @@ export struct ConfigForm {
     max-files: string,
     max-image-pixels: string,
     file-sync: bool,
+    sound-enabled: bool,
     mdns-enabled: bool,
     peers: string,
 }
@@ -32,6 +33,7 @@ export component ConfigWindow inherits Window {
     in-out property <string> max-files: "";
     in-out property <string> max-image-pixels: "";
     in-out property <bool> file-sync: true;
+    in-out property <bool> sound-enabled: true;
     in-out property <bool> mdns-enabled: true;
     in-out property <string> peers: "";
     in-out property <string> status: "";
@@ -48,7 +50,7 @@ export component ConfigWindow inherits Window {
             font-weight: 600;
         }
         Text {
-            text: "端口、密钥、阈值和 mDNS 修改后需要重启进程生效。";
+            text: "阈值、文件同步、提示音、轮询间隔会自动热加载；端口、密钥、mDNS、手动节点需要重启。";
             color: #666666;
             wrap: word-wrap;
         }
@@ -130,6 +132,10 @@ export component ConfigWindow inherits Window {
                     text: "同步文件剪贴板";
                     checked <=> root.file-sync;
                 }
+                CheckBox {
+                    text: "收到远端剪贴时播放提示音";
+                    checked <=> root.sound-enabled;
+                }
             }
         }
 
@@ -150,6 +156,7 @@ export component ConfigWindow inherits Window {
                         max-files: root.max-files,
                         max-image-pixels: root.max-image-pixels,
                         file-sync: root.file-sync,
+                        sound-enabled: root.sound-enabled,
                         mdns-enabled: root.mdns-enabled,
                         peers: root.peers,
                     });

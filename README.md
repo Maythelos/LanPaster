@@ -2,7 +2,7 @@
 
 局域网剪贴板同步工具的可运行版本。
 
-当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、按需拉起的配置面板。提示音、开机自启等还在后续迭代。
+当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、PSK 加密连接、mDNS 自动发现、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、按需拉起的配置面板、提示音、开机自启、单实例和配置热加载。
 
 ## 已实现
 
@@ -32,17 +32,20 @@
   - macOS 使用 Accessory 激活策略，不显示 Dock 图标
 - 配置面板：独立进程按需拉起（`lanpaster ui`），关闭即退出，不常驻；保存 TOML 配置
 - 无界面模式：`lanpaster run --headless`，适合服务器 / 调试 / 无桌面环境
+- 提示音：收到远端剪贴后播放短提示音；托盘菜单“测试提示音”，配置面板可关闭
+- 开机自启：macOS LaunchAgent、Windows 注册表 Run、Linux XDG autostart；托盘菜单可勾选，也可用 CLI
+- 单实例：按配置文件路径加文件锁；同一配置只允许一个守护进程
+- 配置热加载：阈值、文件同步、提示音、轮询间隔修改后自动生效；端口、密钥、mDNS、手动节点仍需重启
+- 剪贴板监听优化：优先使用 `clipboard-rs` 平台 watcher（macOS 实测生效），失败时退回轮询；watcher 有效时保留 10 秒兜底轮询
+- 接收文件缓存：按 `cache_max_mb` 自动删除旧事件目录，保留最新一次文件剪贴
 
 ## 尚未实现
 
-- 收到剪贴的提示音
-- 开机自启、单实例锁
-- 配置热加载（当前保存配置后需要重启 LanPaster 生效）
 - 剪贴历史
-- 接收文件缓存上限的强制清理
-- 剪贴板轮询优化（当前仍是定时轮询，图片场景有优化空间）
 - Linux GNOME Wayland 的原生后台剪贴板监听（Mutter 不实现 data-control；目前只能依赖 XWayland 或桌面扩展）
 - 目录、符号链接、断点续传（一期仅常规文件）
+- `.app` / Windows exe / Linux AppImage 打包
+- Windows / Linux 实机验证
 
 ## 构建
 
@@ -82,6 +85,17 @@ psk:    0123...（64 位 hex）
 ```bash
 ./target/release/lanpaster ui
 ```
+
+提示音测试与开机自启：
+
+```bash
+./target/release/lanpaster beep
+./target/release/lanpaster autostart enable
+./target/release/lanpaster autostart disable
+./target/release/lanpaster autostart status
+```
+
+开机自启使用默认配置路径；如果使用 `LANPASTER_CONFIG` 自定义配置，建议手动调整启动项或在默认路径放配置。
 
 默认开启 mDNS 自动发现。也可以在配置里关闭 mDNS，使用手动直连：
 
@@ -128,7 +142,8 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 | `max_files` | 50 | 单次文件数量上限 |
 | `max_image_pixels` | 50000000 | 图片像素上限（防解压炸弹） |
 | `file_sync` | true | 文件同步开关 |
-| `cache_max_mb` | 1024 | 接收临时文件缓存上限（当前版本未强制清理，见下方说明） |
+| `sound_enabled` | true | 收到远端剪贴时是否播放提示音 |
+| `cache_max_mb` | 1024 | 接收临时文件缓存上限，超出清理旧事件目录 |
 | `mdns_enabled` | true | mDNS 自动发现开关 |
 | `peers` | `[]` | 手动直连地址列表 |
 | `log_level` | info | `RUST_LOG` 可覆盖，如 `RUST_LOG=debug` |
@@ -143,7 +158,7 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 - Linux: `~/.cache/LanPaster/incoming/...`
 - Windows: `%LOCALAPPDATA%\LanPaster\cache\incoming\...`
 
-接收成功后会把本地临时文件列表写入剪贴板，可以直接在 Finder / Explorer / 文件管理器中粘贴。当前版本在启动时清空旧接收目录；`cache_max_mb` 的自动清理尚未实现，后续补上。
+接收成功后会把本地临时文件列表写入剪贴板，可以直接在 Finder / Explorer / 文件管理器中粘贴。每次成功接收文件后会检查 `cache_max_mb`，按目录时间删除旧事件目录，最新一次文件剪贴会保留。程序启动时也会清空旧接收目录。
 
 ## 安全说明
 
@@ -163,6 +178,10 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 - `src/mdns.rs`：mDNS 注册与发现
 - `src/tray.rs`：原生托盘、菜单事件、winit 事件循环
 - `src/ui.rs`：Slint 配置面板（独立进程）
+- `src/sound.rs`：提示音
+- `src/autostart.rs`：开机自启（macOS / Windows / Linux）
+- `src/instance.rs`：单实例文件锁
+- `src/cache.rs`：接收文件缓存清理
 - `ui/app.slint`：配置窗口布局
 - `assets/tray-*.png`：托盘图标
 - `src/client.rs`：`send` / `send-file` / `send-files` / `send-image` 调试客户端
@@ -171,18 +190,29 @@ peers = ["192.168.1.20:39393", "192.168.1.21:39393"]
 
 在 macOS arm64 上实测通过：
 
-- 单实例文本、JPEG 图片、单文件、多文件同步
+- 文本、JPEG 图片、单文件、多文件同步
 - 两个守护进程通过 mDNS 自动发现并稳定连接
 - 两个守护进程通过手动 `peers` 直连
 - 超过 `max_file_mb` 的文件被拒绝，客户端收到 Reject
 - PSK 不一致时握手失败
-- 空闲内存约 18 MB（release、无托盘），空闲 CPU 接近 0%
+- 原生托盘启动、设备列表更新、菜单事件路径
+- 配置面板独立进程启动
+- 提示音命令、开机自启写入/移除
+- 同一配置第二个实例被拒绝
+- 修改 `max_text_kb` 后无需重启立即生效
+- `clipboard-rs` 平台 watcher 在 macOS 上生效
+- 两次 700KB 文件接收后只保留最新事件目录
+
+资源占用（release，macOS arm64 实测）：
+
+- 无界面模式：约 18–20 MB，空闲 CPU 接近 0
+- 带原生托盘：约 80 MB（AppKit / NSStatusItem 基线）
+- 配置面板进程：约 125 MB，仅在打开期间存在
 
 ## 下一步
 
-1. 接入 Slint `SystemTrayIcon` / 原生托盘菜单
-2. 配置面板（设备列表、PSK、阈值、文件同步开关）
-3. 提示音
-4. 开机自启、单实例锁
-5. 剪贴板轮询改成平台变更计数或 watcher，降低图片场景 CPU
-6. 接收文件缓存上限与自动清理
+1. Windows / Linux 实机验证
+2. `.app` / Windows exe / Linux AppImage 打包
+3. 配置热加载扩展到端口 / PSK / mDNS / 手动节点
+4. 剪贴历史、设备管理
+5. 目录同步 / 断点续传

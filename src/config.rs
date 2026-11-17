@@ -22,6 +22,7 @@ pub struct Config {
     pub max_files: usize,
     pub max_image_pixels: u64,
     pub file_sync: bool,
+    pub sound_enabled: bool,
     pub cache_max_mb: u64,
     pub mdns_enabled: bool,
     /// Manual peers in `host:port` form.
@@ -48,6 +49,7 @@ impl Default for Config {
             max_files: 50,
             max_image_pixels: 50_000_000,
             file_sync: true,
+            sound_enabled: true,
             cache_max_mb: 1024,
             mdns_enabled: true,
             peers: Vec::new(),
@@ -57,6 +59,13 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("read config {}", path.display()))?;
+        toml::from_str::<Self>(&raw)
+            .with_context(|| format!("parse config {}", path.display()))
+    }
+
     pub fn load_or_create_at(path: &Path) -> Result<(Self, PathBuf)> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)

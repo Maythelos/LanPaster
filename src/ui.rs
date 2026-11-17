@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub fn run_config_window(config: Config, config_path: PathBuf) -> Result<()> {
     let window = ConfigWindow::new().context("create config window")?;
     fill_form(&window, &config);
-    window.set_status("修改后点击保存；网络/密钥/阈值需要重启 LanPaster 生效。".into());
+    window.set_status("阈值/文件同步/提示音/轮询会热加载；端口/密钥/mDNS/节点需要重启。".into());
 
     {
         let window_weak = window.as_weak();
@@ -50,7 +50,7 @@ pub fn run_config_window(config: Config, config_path: PathBuf) -> Result<()> {
                 Ok(()) => {
                     current = next;
                     if let Some(window) = window_weak.upgrade() {
-                        window.set_status("已保存；重启 LanPaster 后生效".into());
+                        window.set_status("已保存；热加载配置已生效，网络/密钥/节点变更需重启".into());
                     }
                 }
                 Err(err) => {
@@ -79,6 +79,7 @@ fn fill_form(window: &ConfigWindow, config: &Config) {
     window.set_max_files(config.max_files.to_string().into());
     window.set_max_image_pixels(config.max_image_pixels.to_string().into());
     window.set_file_sync(config.file_sync);
+    window.set_sound_enabled(config.sound_enabled);
     window.set_mdns_enabled(config.mdns_enabled);
     window.set_peers(config.peers.join(", ").into());
 }
@@ -96,6 +97,7 @@ fn form_to_config(base: &Config, form: &ConfigForm) -> Result<Config> {
     cfg.max_files = parse_usize(&form.max_files, "文件数量上限")?;
     cfg.max_image_pixels = parse_u64(&form.max_image_pixels, "图片像素上限")?;
     cfg.file_sync = form.file_sync;
+    cfg.sound_enabled = form.sound_enabled;
     cfg.mdns_enabled = form.mdns_enabled;
     cfg.peers = parse_peers(&form.peers);
     if cfg.poll_interval_ms < 100 {
@@ -155,6 +157,7 @@ mod tests {
             max_files: "50".into(),
             max_image_pixels: "50000000".into(),
             file_sync: true,
+            sound_enabled: true,
             mdns_enabled: false,
             peers: "127.0.0.1:40001, 127.0.0.1:40002".into(),
         };

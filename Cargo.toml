@@ -1,6 +1,6 @@
 [package]
 name = "lanpaster"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.80"
 description = "LAN clipboard sync tool"
@@ -8,14 +8,17 @@ license = "GPL-3.0-only"
 
 [dependencies]
 anyhow = "1"
+arc-swap = "1"
 bincode = { version = "2", features = ["derive"] }
 clipboard-rs = { version = "0.3.5", features = ["image"] }
 dirs = "6"
+fs2 = "0.4"
 getrandom = "0.2"
 hex = "0.4"
 hostname = "0.4"
 mdns-sd = "0.21"
 if-addrs = "0.15"
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
@@ -36,3 +39,6 @@ codegen-units = 1
 
 [build-dependencies]
 slint-build = "1.19"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"

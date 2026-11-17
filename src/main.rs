@@ -1,10 +1,14 @@
+mod autostart;
+mod cache;
 mod clipboard;
 mod client;
 mod config;
 mod crypto;
+mod instance;
 mod mdns;
 mod net;
 mod protocol;
+mod sound;
 mod tray;
 mod ui;
 
@@ -13,14 +17,15 @@ use crate::{
     net::{event_from_local, run_listener, AppContext},
 };
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use std::{
     env,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 use tokio::sync::mpsc as tokio_mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
@@ -29,6 +34,8 @@ fn main() -> Result<()> {
     match command {
         "run" => run(&args),
         "ui" => run_config_ui(),
+        "beep" => { sound::test_beep(); Ok(()) }
+        "autostart" => autostart_cmd(&args),
         "send" => send(&args),
         "send-file" => send_file(&args),
         "send-files" => send_files(&args),
@@ -96,6 +103,27 @@ fn send_image(args: &[String]) -> Result<()> {
     runtime.block_on(client::send_image(&cfg, addr, std::path::Path::new(path)))
 }
 
+fn autostart_cmd(args: &[String]) -> Result<()> {
+    match args.get(1).map(String::as_str) {
+        Some("enable") => {
+            autostart::set(true)?;
+            println!("autostart enabled");
+        }
+        Some("disable") => {
+            autostart::set(false)?;
+            println!("autostart disabled");
+        }
+        Some("status") | None => {
+            println!(
+                "autostart: {}",
+                if autostart::is_enabled() { "enabled" } else { "disabled" }
+            );
+        }
+        Some(other) => anyhow::bail!("unknown autostart action {other:?}"),
+    }
+    Ok(())
+}
+
 fn run_config_ui() -> Result<()> {
     let (cfg, path) = load_config()?;
     cfg.validate()?;
@@ -105,7 +133,7 @@ fn run_config_ui() -> Result<()> {
 
 fn print_help() {
     println!(
-        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
+        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -141,6 +169,14 @@ fn run(args: &[String]) -> Result<()> {
     cfg.validate()?;
     init_logging(&cfg.log_level);
 
+    let Some(_instance_lock) = instance::acquire(&path)? else {
+        println!(
+            "LanPaster is already running for config {}",
+            path.display()
+        );
+        return Ok(());
+    };
+
     info!("config: {}", path.display());
     info!("device: {} ({})", cfg.device_name, cfg.device_id);
     info!("psk:    {}", cfg.psk);
@@ -159,7 +195,7 @@ fn run(args: &[String]) -> Result<()> {
         .enable_all()
         .build()
         .context("build tokio runtime")?;
-    let app = runtime.block_on(start_services(cfg.clone()))?;
+    let app = runtime.block_on(start_services(cfg.clone(), path.clone()))?;
 
     let headless = args.iter().any(|a| a == "--headless")
         || env::var_os("LANPASTER_HEADLESS").is_some();
@@ -181,11 +217,12 @@ fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn start_services(cfg: Config) -> Result<Arc<AppContext>> {
+async fn start_services(cfg: Config, config_path: PathBuf) -> Result<Arc<AppContext>> {
     let (local_tx, mut local_rx) = tokio_mpsc::unbounded_channel();
-    let clipboard_cmd = clipboard::spawn(cfg.clone(), local_tx)
+    let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
+    let clipboard_cmd = clipboard::spawn(config.clone(), local_tx)
         .map_err(|e| anyhow::anyhow!("clipboard thread: {e}"))?;
-    let app = Arc::new(AppContext::new(cfg.clone(), clipboard_cmd)?);
+    let app = Arc::new(AppContext::new(config, clipboard_cmd)?);
 
     for peer in &cfg.peers {
         app.ensure_dial(peer.clone()).await;
@@ -193,6 +230,42 @@ async fn start_services(cfg: Config) -> Result<Arc<AppContext>> {
 
     if cfg.mdns_enabled {
         mdns::spawn(cfg.clone(), app.clone(), tokio::runtime::Handle::current());
+    }
+
+    // Watch the config file written by the on-demand config window and
+    // hot-apply the settings that do not require restarting the network layer.
+    {
+        let watch_app = app.clone();
+        let watch_path = config_path.clone();
+        tokio::spawn(async move {
+            let mut last = config_stamp(&watch_path);
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let stamp = config_stamp(&watch_path);
+                if stamp == last {
+                    continue;
+                }
+                last = stamp;
+                match Config::load_from(&watch_path) {
+                    Ok(new) => {
+                        if let Err(err) = new.validate() {
+                            warn!("config reload ignored: {err:#}");
+                            continue;
+                        }
+                        let restart = watch_app.apply_config(new);
+                        if restart.is_empty() {
+                            info!("config reloaded");
+                        } else {
+                            info!(
+                                "config reloaded; restart required for: {}",
+                                restart.join(", ")
+                            );
+                        }
+                    }
+                    Err(err) => warn!("config reload failed: {err:#}"),
+                }
+            }
+        });
     }
 
     let listener_app = app.clone();
@@ -203,10 +276,10 @@ async fn start_services(cfg: Config) -> Result<Arc<AppContext>> {
     });
 
     let event_app = app.clone();
-    let event_cfg = cfg.clone();
     tokio::spawn(async move {
         while let Some(local) = local_rx.recv().await {
-            let event = event_from_local(&event_cfg, local);
+            let cfg = event_app.config();
+            let event = event_from_local(&cfg, local);
             if !event_app.sync_enabled.load(Ordering::Relaxed) {
                 info!("sync disabled; dropping local clipboard event");
                 continue;
@@ -222,6 +295,17 @@ async fn start_services(cfg: Config) -> Result<Arc<AppContext>> {
     });
 
     Ok(app)
+}
+
+fn config_stamp(path: &Path) -> Option<(u128, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((modified, meta.len()))
 }
 
 fn init_logging(level: &str) {

@@ -5,6 +5,7 @@ use crate::{
     protocol::{sha256, ClipKind, ItemMeta, Message, CHUNK_SIZE, PROTOCOL_VERSION},
 };
 use anyhow::{bail, Context, Result};
+use arc_swap::ArcSwap;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -150,7 +151,7 @@ impl Default for SeenEvents {
 }
 
 pub struct AppContext {
-    pub config: Arc<Config>,
+    pub config: Arc<ArcSwap<Config>>,
     pub psk: Arc<Vec<u8>>,
     pub peers: Arc<PeerManager>,
     pub clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
@@ -162,12 +163,12 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new(
-        config: Config,
+        config: Arc<ArcSwap<Config>>,
         clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
     ) -> Result<Self> {
-        let psk = Arc::new(config.psk_bytes()?);
+        let psk = Arc::new(config.load().psk_bytes()?);
         Ok(Self {
-            config: Arc::new(config),
+            config,
             psk,
             peers: Arc::new(PeerManager::new()),
             clipboard_cmd,
@@ -180,6 +181,33 @@ impl AppContext {
 
     fn next_conn_id(&self) -> u64 {
         self.conn_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn config(&self) -> Arc<Config> {
+        self.config.load_full()
+    }
+
+    /// Apply a new config snapshot. Returns fields that still require a restart.
+    pub fn apply_config(&self, new: Config) -> Vec<&'static str> {
+        let old = self.config.load_full();
+        let mut restart = Vec::new();
+        if old.listen_port != new.listen_port {
+            restart.push("listen_port");
+        }
+        if old.psk != new.psk {
+            restart.push("psk");
+        }
+        if old.mdns_enabled != new.mdns_enabled {
+            restart.push("mdns_enabled");
+        }
+        if old.peers != new.peers {
+            restart.push("peers");
+        }
+        if old.device_id != new.device_id {
+            restart.push("device_id");
+        }
+        self.config.store(Arc::new(new));
+        restart
     }
 
     pub async fn ensure_dial(self: &Arc<Self>, addr: String) {
@@ -445,7 +473,8 @@ async fn hash_file(path: &Path) -> Result<Vec<u8>> {
 }
 
 pub async fn run_listener(app: Arc<AppContext>) -> Result<()> {
-    let addr = format!("0.0.0.0:{}", app.config.listen_port);
+    let port = app.config.load().listen_port;
+    let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("bind {addr}"))?;
@@ -494,10 +523,11 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     stream.set_nodelay(true).ok();
     let (mut reader, mut writer) = handshake(stream, &app.psk, initiator).await?;
 
+    let local = app.config.load_full();
     writer
         .send(&Message::Hello {
-            device_id: app.config.device_id.clone(),
-            device_name: app.config.device_name.clone(),
+            device_id: local.device_id.clone(),
+            device_name: local.device_name.clone(),
             version: PROTOCOL_VERSION,
         })
         .await?;
@@ -514,7 +544,7 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     if version != PROTOCOL_VERSION {
         bail!("protocol version mismatch: remote {version}, local {PROTOCOL_VERSION}");
     }
-    if remote_id == app.config.device_id {
+    if remote_id == local.device_id {
         bail!("refusing connection to self");
     }
 
@@ -522,7 +552,7 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     let pending = Arc::new(Mutex::new(HashMap::<u64, mpsc::Sender<Control>>::new()));
     let cancel = CancellationToken::new();
     let conn_id = app.next_conn_id();
-    let canonical = initiator == (app.config.device_id.as_str() < remote_id.as_str());
+    let canonical = initiator == (local.device_id.as_str() < remote_id.as_str());
     let peer = Arc::new(Peer {
         device_id: remote_id.clone(),
         device_name: remote_name.clone(),
@@ -660,7 +690,8 @@ async fn handle_message(
                     .await;
                 return Ok(());
             }
-            match validate_offer(&app.config, kind, &items, total_size) {
+            let cfg = app.config.load_full();
+            match validate_offer(&cfg, kind, &items, total_size) {
                 Ok(Some(temp_dir)) => {
                     let event = IncomingEvent::new(id, kind, items, total_size, Some(temp_dir));
                     incoming.insert(id, event);
@@ -735,7 +766,14 @@ async fn handle_message(
             };
             if applied {
                 app.seen.lock().await.insert(id);
-                if !keep_files {
+                if app.config.load().sound_enabled {
+                    crate::sound::play();
+                }
+                if keep_files {
+                    let cfg = app.config.load_full();
+                    let max = cfg.cache_max_mb.saturating_mul(1024 * 1024);
+                    crate::cache::cleanup_incoming(event.temp_dir.as_deref(), max);
+                } else {
                     cleanup_event(event);
                 }
                 let _ = tx

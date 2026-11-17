@@ -1,16 +1,20 @@
 use crate::config::Config;
 use anyhow::Result;
-use clipboard_rs::{common::RustImage, Clipboard, ClipboardContext, ContentFormat, RustImageData};
+use arc_swap::ArcSwap;
+use clipboard_rs::{
+    common::RustImage, Clipboard, ClipboardContext, ClipboardHandler, ClipboardWatcher,
+    ClipboardWatcherContext, ContentFormat, RustImageData,
+};
 use sha2::{Digest, Sha256};
 use std::{
     io::Cursor,
     path::PathBuf,
-    sync::mpsc,
+    sync::{mpsc, Arc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc as tokio_mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct LocalFileMeta {
@@ -58,17 +62,56 @@ pub enum ClipboardCommand {
     },
     /// Re-read the local clipboard and emit it as a local event.
     Push,
+    /// The platform clipboard watcher reported a change.
+    Changed,
+}
+
+struct ChangeHandler {
+    tx: mpsc::Sender<ClipboardCommand>,
+}
+
+impl ClipboardHandler for ChangeHandler {
+    fn on_clipboard_change(&mut self) {
+        let _ = self.tx.send(ClipboardCommand::Changed);
+    }
+}
+
+fn start_watcher(cmd_tx: mpsc::Sender<ClipboardCommand>) -> bool {
+    match ClipboardWatcherContext::new_with_interval(Duration::from_millis(200)) {
+        Ok(mut watcher) => {
+            watcher.add_handler(ChangeHandler { tx: cmd_tx });
+            match thread::Builder::new()
+                .name("lanpaster-clipboard-watch".to_string())
+                .spawn(move || watcher.start_watch())
+            {
+                Ok(_) => {
+                    info!("clipboard watcher active");
+                    true
+                }
+                Err(err) => {
+                    warn!("clipboard watcher thread failed: {err}");
+                    false
+                }
+            }
+        }
+        Err(err) => {
+            warn!("clipboard watcher unavailable, falling back to polling: {err}");
+            false
+        }
+    }
 }
 
 pub fn spawn(
-    config: Config,
+    config: Arc<ArcSwap<Config>>,
     events: tokio_mpsc::UnboundedSender<LocalClipboard>,
 ) -> std::result::Result<std::sync::mpsc::Sender<ClipboardCommand>, String> {
     let (cmd_tx, cmd_rx) = mpsc::channel();
+    let watcher_tx = cmd_tx.clone();
     thread::Builder::new()
         .name("lanpaster-clipboard".to_string())
         .spawn(move || {
-            if let Err(err) = run(config, events, cmd_rx) {
+            let watcher_active = start_watcher(watcher_tx);
+            if let Err(err) = run(config, events, cmd_rx, watcher_active) {
                 warn!("clipboard thread stopped: {err:#}");
             }
         })
@@ -77,21 +120,24 @@ pub fn spawn(
 }
 
 fn run(
-    config: Config,
+    config: Arc<ArcSwap<Config>>,
     events: tokio_mpsc::UnboundedSender<LocalClipboard>,
     commands: mpsc::Receiver<ClipboardCommand>,
+    watcher_active: bool,
 ) -> Result<()> {
     let ctx = ClipboardContext::new().map_err(|e| anyhow::anyhow!("open clipboard: {e}"))?;
-    let poll = Duration::from_millis(config.poll_interval_ms.clamp(100, 5000));
     let mut last_fp: Option<Vec<u8>> = None;
     let mut suppress_next = false;
     let mut last_image_mime: Option<String> = None;
+    let tick = Duration::from_millis(200);
+    let mut next_poll = Instant::now();
 
     loop {
         while let Ok(cmd) = commands.try_recv() {
+            let cfg = config.load_full();
             if !apply_command(
                 &ctx,
-                &config,
+                &cfg,
                 &events,
                 &mut last_fp,
                 &mut suppress_next,
@@ -102,31 +148,42 @@ fn run(
             }
         }
 
-        match read_local(&ctx, &config, last_image_mime.as_deref()) {
-            Some(local) => {
-                let fp = fingerprint_local(&local);
-                if suppress_next {
-                    suppress_next = false;
-                    last_fp = Some(fp);
-                    debug!("suppressed clipboard poll after remote write");
-                } else if last_fp.as_ref() != Some(&fp) {
-                    last_fp = Some(fp);
-                    if events.send(local).is_err() {
-                        break;
-                    }
-                }
-            }
-            None => {
-                last_fp = None;
-                suppress_next = false;
-            }
+        let cfg = config.load_full();
+        let fallback = if watcher_active {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_millis(cfg.poll_interval_ms.clamp(100, 5000))
+        };
+        if Instant::now() >= next_poll {
+            emit_local(
+                &ctx,
+                &cfg,
+                &events,
+                &mut last_fp,
+                &mut suppress_next,
+                &mut last_image_mime,
+            );
+            next_poll = Instant::now() + fallback;
         }
 
-        match commands.recv_timeout(poll) {
+        match commands.recv_timeout(tick) {
+            Ok(ClipboardCommand::Changed) => {
+                let cfg = config.load_full();
+                emit_local(
+                    &ctx,
+                    &cfg,
+                    &events,
+                    &mut last_fp,
+                    &mut suppress_next,
+                    &mut last_image_mime,
+                );
+                next_poll = Instant::now() + fallback;
+            }
             Ok(cmd) => {
+                let cfg = config.load_full();
                 if !apply_command(
                     &ctx,
-                    &config,
+                    &cfg,
                     &events,
                     &mut last_fp,
                     &mut suppress_next,
@@ -141,6 +198,33 @@ fn run(
         }
     }
     Ok(())
+}
+
+fn emit_local(
+    ctx: &ClipboardContext,
+    config: &Config,
+    events: &tokio_mpsc::UnboundedSender<LocalClipboard>,
+    last_fp: &mut Option<Vec<u8>>,
+    suppress_next: &mut bool,
+    last_image_mime: &mut Option<String>,
+) {
+    match read_local(ctx, config, last_image_mime.as_deref()) {
+        Some(local) => {
+            let fp = fingerprint_local(&local);
+            if *suppress_next {
+                *suppress_next = false;
+                *last_fp = Some(fp);
+                debug!("suppressed clipboard poll after remote write");
+            } else if last_fp.as_ref() != Some(&fp) {
+                *last_fp = Some(fp);
+                let _ = events.send(local);
+            }
+        }
+        None => {
+            *last_fp = None;
+            *suppress_next = false;
+        }
+    }
 }
 
 fn apply_command(
@@ -169,6 +253,7 @@ fn apply_command(
             let _ = respond.send(result);
             true
         }
+        ClipboardCommand::Changed => true,
         ClipboardCommand::Push => {
             if let Some(local) = read_local(ctx, config, last_image_mime.as_deref()) {
                 if let LocalClipboard::Image { mime, .. } = &local {
