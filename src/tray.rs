@@ -474,6 +474,7 @@ fn open_config_window(panel: &str) {
             if let Err(err) = std::process::Command::new(exe)
                 .arg("ui")
                 .arg(panel)
+                .env("LANPASTER_TRAY_UI", "1")
                 .spawn()
             {
                 warn!("failed to open config window: {err}");

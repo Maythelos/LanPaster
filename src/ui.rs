@@ -1,8 +1,8 @@
 slint::include_modules!();
 
-use crate::{config::Config, pairing::PairingManager};
+use crate::{config::Config, instance, pairing::PairingManager};
 use anyhow::{Context, Result};
-use std::{path::PathBuf, rc::Rc};
+use std::{path::PathBuf, rc::Rc, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -123,8 +123,34 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         });
     }
 
+    // The settings window is a separate process. When it was opened from the
+    // tray, close it as soon as the tray daemon releases the per-config lock.
+    // A standalone `lanpaster ui` (no daemon running) stays usable.
+    let daemon_timer = {
+        let from_tray = std::env::var_os("LANPASTER_TRAY_UI").is_some();
+        let daemon_running = matches!(instance::acquire(&config_path), Ok(None));
+        if from_tray || daemon_running {
+            let timer = slint::Timer::default();
+            let path = config_path.clone();
+            timer.start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(500),
+                move || {
+                    if let Ok(Some(lock)) = instance::acquire(&path) {
+                        drop(lock);
+                        let _ = slint::quit_event_loop();
+                    }
+                },
+            );
+            Some(timer)
+        } else {
+            None
+        }
+    };
+
     window.show().context("show settings window")?;
     slint::run_event_loop().context("slint event loop")?;
+    drop(daemon_timer);
     Ok(())
 }
 
