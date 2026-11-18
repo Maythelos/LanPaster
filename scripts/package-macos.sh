@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+ICON_TAG="${VERSION//./}"
 APP="$ROOT/dist/LanPaster.app"
 ZIP="$ROOT/dist/LanPaster-${VERSION}-macos-universal.zip"
 
@@ -31,7 +32,7 @@ else
 fi
 
 chmod +x "$APP/Contents/MacOS/lanpaster"
-cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon-${VERSION}.icns"
+cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon-${ICON_TAG}.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -46,7 +47,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>lanpaster</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon-${VERSION}</string>
+    <string>AppIcon-${ICON_TAG}</string>
     <key>CFBundleIdentifier</key>
     <string>com.lanpaster.app</string>
     <key>CFBundleInfoDictionaryVersion</key>
