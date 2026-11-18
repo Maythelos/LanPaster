@@ -6,6 +6,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::SystemTime,
 };
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -41,6 +42,7 @@ struct Pending {
 struct Inner {
     trusted: Vec<TrustedPeer>,
     pending: std::collections::HashMap<String, Pending>,
+    trusted_mtime: Option<SystemTime>,
 }
 
 pub struct PairingManager {
@@ -51,6 +53,7 @@ pub struct PairingManager {
 impl PairingManager {
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
+        let trusted_mtime = Self::trusted_mtime(&path);
         let trusted = load_trusted(&path).unwrap_or_else(|err| {
             warn!("could not read trusted peers {}: {err:#}", path.display());
             Vec::new()
@@ -60,8 +63,36 @@ impl PairingManager {
             inner: Mutex::new(Inner {
                 trusted,
                 pending: std::collections::HashMap::new(),
+                trusted_mtime,
             }),
         })
+    }
+
+    fn trusted_mtime(path: &Path) -> Option<SystemTime> {
+        fs::metadata(path).ok()?.modified().ok()
+    }
+
+    /// Pick up changes made by the `lanpaster forget` CLI while the daemon is
+    /// running. The trusted file is small, so checking its mtime on each
+    /// access is cheap and keeps pairing decisions in sync with the file.
+    fn reload_if_changed(&self) {
+        let current = Self::trusted_mtime(&self.path);
+        let mut inner = self.inner.lock().unwrap();
+        if current == inner.trusted_mtime {
+            return;
+        }
+        let trusted = match load_trusted(&self.path) {
+            Ok(trusted) => trusted,
+            Err(err) => {
+                warn!(
+                    "could not reload trusted peers {}: {err:#}",
+                    self.path.display()
+                );
+                return;
+            }
+        };
+        inner.trusted = trusted;
+        inner.trusted_mtime = current;
     }
 
     pub fn fingerprint(public_key: &[u8]) -> String {
@@ -70,6 +101,7 @@ impl PairingManager {
     }
 
     pub fn is_trusted(&self, device_id: &str, public_key: &str) -> bool {
+        self.reload_if_changed();
         let inner = self.inner.lock().unwrap();
         inner
             .trusted
@@ -78,6 +110,7 @@ impl PairingManager {
     }
 
     pub fn trust(&self, device_id: &str, name: &str, public_key: &str) -> Result<()> {
+        self.reload_if_changed();
         let mut inner = self.inner.lock().unwrap();
         if let Some(peer) = inner.trusted.iter_mut().find(|p| p.device_id == device_id) {
             peer.name = name.to_string();
@@ -89,7 +122,9 @@ impl PairingManager {
                 public_key: public_key.to_string(),
             });
         }
-        save_trusted(&self.path, &inner.trusted)
+        save_trusted(&self.path, &inner.trusted)?;
+        inner.trusted_mtime = Self::trusted_mtime(&self.path);
+        Ok(())
     }
 
     /// Register a pending request, or subscribe to an existing one. The returned
@@ -169,6 +204,46 @@ impl PairingManager {
             })
             .collect()
     }
+
+    pub fn trusted_list(&self) -> Vec<TrustedPeer> {
+        self.reload_if_changed();
+        self.inner.lock().unwrap().trusted.clone()
+    }
+
+    /// Forget a trusted device by its device id. Returns true when a device
+    /// was actually removed. The running daemon picks up the change through
+    /// [`Self::reload_if_changed`] without needing a restart.
+    pub fn untrust(&self, device_id: &str) -> Result<bool> {
+        self.reload_if_changed();
+        let mut inner = self.inner.lock().unwrap();
+        let remaining: Vec<_> = inner
+            .trusted
+            .iter()
+            .filter(|p| p.device_id != device_id)
+            .cloned()
+            .collect();
+        if remaining.len() == inner.trusted.len() {
+            return Ok(false);
+        }
+        save_trusted(&self.path, &remaining)?;
+        inner.trusted = remaining;
+        inner.trusted_mtime = Self::trusted_mtime(&self.path);
+        Ok(true)
+    }
+
+    /// Forget every trusted device. Returns the number of removed devices.
+    pub fn untrust_all(&self) -> Result<usize> {
+        self.reload_if_changed();
+        let mut inner = self.inner.lock().unwrap();
+        let count = inner.trusted.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        save_trusted(&self.path, &[])?;
+        inner.trusted.clear();
+        inner.trusted_mtime = Self::trusted_mtime(&self.path);
+        Ok(count)
+    }
 }
 
 fn load_trusted(path: &Path) -> Result<Vec<TrustedPeer>> {
@@ -218,6 +293,50 @@ mod tests {
         assert!(mgr.approve(&key));
         assert!(mgr.is_trusted("dev1", &"aa".repeat(32)));
         assert!(path.exists());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn untrust_removes_and_persists() {
+        let path = std::env::temp_dir().join(format!(
+            "lanpaster-pairing-test-{}.toml",
+            crate::config::random_hex(4)
+        ));
+        let mgr = PairingManager::new(&path).unwrap();
+        let (key, _) = mgr.request("dev1", "Mac", "aa".repeat(32).as_str());
+        mgr.approve(&key);
+        let (key, _) = mgr.request("dev2", "PC", "bb".repeat(32).as_str());
+        mgr.approve(&key);
+        assert_eq!(mgr.trusted_list().len(), 2);
+
+        assert!(mgr.untrust("dev1").unwrap());
+        assert_eq!(mgr.trusted_list().len(), 1);
+        assert!(!mgr.is_trusted("dev1", &"aa".repeat(32)));
+        assert!(mgr.is_trusted("dev2", &"bb".repeat(32)));
+        assert!(!mgr.untrust("dev1").unwrap());
+
+        // A fresh manager sees the persisted result.
+        let fresh = PairingManager::new(&path).unwrap();
+        assert_eq!(fresh.trusted_list().len(), 1);
+        assert_eq!(fresh.untrust_all().unwrap(), 1);
+        assert!(fresh.trusted_list().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn detects_external_trusted_file_change() {
+        let path = std::env::temp_dir().join(format!(
+            "lanpaster-pairing-test-{}.toml",
+            crate::config::random_hex(4)
+        ));
+        let mgr = PairingManager::new(&path).unwrap();
+        let (key, _) = mgr.request("dev1", "Mac", "aa".repeat(32).as_str());
+        mgr.approve(&key);
+        assert!(mgr.is_trusted("dev1", &"aa".repeat(32)));
+
+        // Simulate `lanpaster forget dev1` editing the file from another process.
+        save_trusted(&path, &[]).unwrap();
+        assert!(!mgr.is_trusted("dev1", &"aa".repeat(32)));
         let _ = fs::remove_file(path);
     }
 }

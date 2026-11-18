@@ -2,7 +2,7 @@ slint::include_modules!();
 
 use crate::{config::Config, pairing::PairingManager};
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::{path::PathBuf, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -28,8 +28,11 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
     window
         .window()
         .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(
-            800.0, 470.0,
+            800.0, 640.0,
         )));
+    let trusted_path = config_path.with_extension("trusted.toml");
+    let pairing = Rc::new(PairingManager::new(&trusted_path)?);
+    refresh_devices(&window, &pairing);
     fill_form(&window, &config);
     window.set_panel(match panel {
         Panel::Connection => 0,
@@ -84,6 +87,42 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         });
     }
 
+    {
+        let window_weak = window.as_weak();
+        let pairing = pairing.clone();
+        window.on_forget_device(move |id| {
+            let id = id.to_string();
+            let result = pairing.untrust(&id);
+            if let Some(window) = window_weak.upgrade() {
+                match result {
+                    Ok(true) => {
+                        refresh_devices(&window, &pairing);
+                        set_status(&window, format!("已删除设备 {id}"), true);
+                    }
+                    Ok(false) => set_status(&window, format!("设备 {id} 不存在"), false),
+                    Err(err) => set_status(&window, format!("删除失败：{err:#}"), false),
+                }
+            }
+        });
+    }
+
+    {
+        let window_weak = window.as_weak();
+        let pairing = pairing.clone();
+        window.on_forget_all_devices(move || {
+            let result = pairing.untrust_all();
+            if let Some(window) = window_weak.upgrade() {
+                match result {
+                    Ok(count) => {
+                        refresh_devices(&window, &pairing);
+                        set_status(&window, format!("已清空 {count} 台信任设备"), true);
+                    }
+                    Err(err) => set_status(&window, format!("清空失败：{err:#}"), false),
+                }
+            }
+        });
+    }
+
     window.show().context("show settings window")?;
     slint::run_event_loop().context("slint event loop")?;
     Ok(())
@@ -102,6 +141,28 @@ fn apply_status(window: &SettingsWindow, result: Result<()>, success: &str) {
             window.set_status(format!("保存失败：{err:#}").into());
         }
     }
+}
+
+fn set_status(window: &SettingsWindow, text: String, success: bool) {
+    window.set_status_error(!success);
+    window.set_status_success(success);
+    window.set_status(text.into());
+}
+
+fn refresh_devices(window: &SettingsWindow, pairing: &PairingManager) {
+    let devices: Vec<TrustedDevice> = pairing
+        .trusted_list()
+        .into_iter()
+        .map(|peer| TrustedDevice {
+            device_id: peer.device_id.into(),
+            name: peer.name.into(),
+            fingerprint: PairingManager::fingerprint(
+                &hex::decode(&peer.public_key).unwrap_or_default(),
+            )
+            .into(),
+        })
+        .collect();
+    window.set_trusted_devices(slint::ModelRc::new(slint::VecModel::from(devices)));
 }
 
 fn fill_form(window: &SettingsWindow, config: &Config) {
