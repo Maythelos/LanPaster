@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="60" y1="20" x2="980" y2="1020" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b1b33"/><stop offset="1" stop-color="#1b2e4a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="24%" cy="12%" r="86%">
+      <stop offset="0" stop-color="#7fb3ff" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#7fb3ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="450" y1="260" x2="650" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbf4e8"/><stop offset="1" stop-color="#e9dac4"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="181" y1="636" x2="677" y2="748" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f39a76"/><stop offset="1" stop-color="#e46355"/>
+    </linearGradient>
+    <mask id="hole">
+      <rect x="0" y="0" width="1024" height="1024" fill="white"/>
+      <circle cx="733" cy="406" r="56" fill="black"/>
+    </mask>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="230" fill="url(#glow)"/>
+  <circle cx="733" cy="406" r="56" fill="url(#bg)"/>
+  
+  <path d="M 181 636 L 677 636 L 677 692 Q 677 748 621 748 L 237 748 Q 181 748 181 692 Z" fill="url(#bar)"/>
+  <g mask="url(#hole)">
+    <path d="M 181 636 L 181 312 Q 181 276 217 276 L 257 276 Q 293 276 293 312 L 293 636 Z" fill="url(#mark)"/>
+    <path d="M 565 636 L 565 312 Q 565 276 601 276 L 641 276 Q 677 276 677 312 L 677 636 Z" fill="url(#mark)"/>
+    <path d="M 601 276 L 713 276 A 136 136 0 0 1 713 536 L 601 536 Z" fill="url(#mark)"/>
+  </g>
+</svg>

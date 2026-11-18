@@ -20,9 +20,19 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
 };
 
+#[cfg(target_os = "macos")]
 const ICON_OFF: &[u8] = include_bytes!("../assets/tray-off.png");
+#[cfg(target_os = "macos")]
 const ICON_ON: &[u8] = include_bytes!("../assets/tray-on.png");
+#[cfg(target_os = "macos")]
 const ICON_ACTIVE: &[u8] = include_bytes!("../assets/tray-active.png");
+
+#[cfg(not(target_os = "macos"))]
+const ICON_OFF: &[u8] = include_bytes!("../assets/tray-off-color.png");
+#[cfg(not(target_os = "macos"))]
+const ICON_ON: &[u8] = include_bytes!("../assets/tray-on-color.png");
+#[cfg(not(target_os = "macos"))]
+const ICON_ACTIVE: &[u8] = include_bytes!("../assets/tray-active-color.png");
 
 #[derive(Debug)]
 enum UserEvent {
