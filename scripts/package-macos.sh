@@ -80,6 +80,11 @@ plutil -lint "$APP/Contents/Info.plist" >/dev/null
 codesign --force --deep --sign - "$APP" >/dev/null
 codesign --verify --deep --strict "$APP"
 
+# Refresh Finder/IconServices for the local build path. Without this, an old
+# generic icon can stick to dist/LanPaster.app even after the .icns changes.
+touch "$APP"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+
 file "$APP/Contents/MacOS/lanpaster"
 echo "App bundle: $APP"
 echo "Version:    $VERSION"
