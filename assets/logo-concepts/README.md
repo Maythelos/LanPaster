@@ -11,5 +11,7 @@ The shipping app icon is `../AppIcon.svg` (based on `06-bolder-L.svg`).
 | `05-bolder.svg` | deep navy/plum + warm ivory | 160px strokes, even weight |
 | `06-bolder-L.svg` | deep navy/plum + warm ivory | shipping version, 190px L, heavier base |
 
-The P counter is filled with the icon background, not transparent. Tray icon
-sources live in `../tray-*.svg`.
+The P counter is filled with the icon background, not transparent.
+
+macOS menu bar icons are the monochrome template glyphs `../tray-mac-*.svg`.
+Linux and Windows use the colored `../tray-*-color.svg` icons.

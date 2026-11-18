@@ -20,8 +20,18 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
 };
 
+#[cfg(target_os = "macos")]
+const ICON_OFF: &[u8] = include_bytes!("../assets/tray-mac-off.png");
+#[cfg(target_os = "macos")]
+const ICON_ON: &[u8] = include_bytes!("../assets/tray-mac-on.png");
+#[cfg(target_os = "macos")]
+const ICON_ACTIVE: &[u8] = include_bytes!("../assets/tray-mac-active.png");
+
+#[cfg(not(target_os = "macos"))]
 const ICON_OFF: &[u8] = include_bytes!("../assets/tray-off-color.png");
+#[cfg(not(target_os = "macos"))]
 const ICON_ON: &[u8] = include_bytes!("../assets/tray-on-color.png");
+#[cfg(not(target_os = "macos"))]
 const ICON_ACTIVE: &[u8] = include_bytes!("../assets/tray-active-color.png");
 
 #[derive(Debug)]
@@ -406,8 +416,11 @@ fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon)> {
     let icon = load_icon(ICON_OFF)?;
     let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip(format!("LanPaster · {}", app.config.load().device_name))
-        .with_icon(icon);
+        .with_tooltip(format!("LanPaster · {}", app.config.load().device_name));
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_templated(icon);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_icon(icon);
     let tray = builder.build()?;
     Ok((menu_state, tray))
 }
@@ -435,7 +448,14 @@ fn update_tray_status(
             ICON_ON
         };
         if let Ok(icon) = load_icon(icon) {
-            let _ = tray.set_icon(Some(icon));
+            #[cfg(target_os = "macos")]
+            {
+                let _ = tray.set_icon_templated(Some(icon));
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = tray.set_icon(Some(icon));
+            }
         }
     }
 }
