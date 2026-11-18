@@ -1,8 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <g opacity="0.70" fill="none" stroke="black" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M 8 10 L 8 54 L 28 54"/>
-    <path d="M 28 10 L 28 54"/>
-    <path d="M 28 10 H 42 Q 54 10 54 22 Q 54 34 42 34 H 28"/>
+  <defs>
+    <mask id="hole">
+      <rect width="64" height="64" fill="white"/>
+      <g transform="translate(-2.133 -2.133) scale(0.066667)"><circle cx="742" cy="392" r="75" fill="black"/></g>
+    </mask>
+  </defs>
+  <g opacity="0.85" mask="url(#hole)">
+    <g transform="translate(-2.133 -2.133) scale(0.066667)" fill="black">
+      <path d="M 137 262 Q 137 212 187 212 L 277 212 Q 327 212 327 262 L 327 576 Q 327 636 387 636 L 447 636 Q 507 636 507 576 L 507 258 Q 507 212 553 212 L 621 212 Q 667 212 667 258 L 667 736 Q 667 812 591 812 L 213 812 Q 137 812 137 736 Z"/>
+      <path d="M 553 212 L 707 212 A 180 180 0 0 1 707 572 L 553 572 Z"/>
+    </g>
+    
   </g>
-  
 </svg>
