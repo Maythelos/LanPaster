@@ -1,16 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<svg opacity="0.55" xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="16" y1="16" x2="240" y2="240" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="60" y1="20" x2="980" y2="1020" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#101828"/>
       <stop offset="1" stop-color="#2b1b3d"/>
     </linearGradient>
+    <radialGradient id="glow" cx="24%" cy="12%" r="86%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="450" y1="220" x2="650" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff8ec"/>
+      <stop offset="0.55" stop-color="#ffe9cf"/>
+      <stop offset="1" stop-color="#ffd0ab"/>
+    </linearGradient>
+    <mask id="hole">
+      <rect width="1024" height="1024" fill="white"/>
+      <circle cx="742" cy="392" r="75" fill="black"/>
+    </mask>
   </defs>
-  <g opacity="0.55">
-    <rect x="16" y="16" width="224" height="224" rx="54" fill="url(#bg)"/>
-    <g transform="translate(7.85 7.85) scale(0.234667)" fill="#fff3e0">
-      <path d="M 137 262 Q 137 212 187 212 L 277 212 Q 327 212 327 262 L 327 576 Q 327 636 387 636 L 447 636 Q 507 636 507 576 L 507 258 Q 507 212 553 212 L 621 212 Q 667 212 667 258 L 667 736 Q 667 812 591 812 L 213 812 Q 137 812 137 736 Z"/>
-      <path d="M 553 212 L 707 212 A 180 180 0 0 1 707 572 L 553 572 Z"/>
-    </g>
-    
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#glow)"/>
+  <circle cx="742" cy="392" r="75" fill="url(#bg)"/>
+  <g mask="url(#hole)">
+    <path d="M 137 262 Q 137 212 187 212 L 277 212 Q 327 212 327 262 L 327 576 Q 327 636 387 636 L 447 636 Q 507 636 507 576 L 507 258 Q 507 212 553 212 L 621 212 Q 667 212 667 258 L 667 736 Q 667 812 591 812 L 213 812 Q 137 812 137 736 Z" fill="url(#mark)"/>
+    <path d="M 553 212 L 707 212 A 180 180 0 0 1 707 572 L 553 572 Z" fill="url(#mark)"/>
   </g>
 </svg>

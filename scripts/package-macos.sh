@@ -31,7 +31,7 @@ else
 fi
 
 chmod +x "$APP/Contents/MacOS/lanpaster"
-cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon-${VERSION}.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -46,7 +46,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>lanpaster</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
+    <string>AppIcon-${VERSION}</string>
     <key>CFBundleIdentifier</key>
     <string>com.lanpaster.app</string>
     <key>CFBundleInfoDictionaryVersion</key>
