@@ -92,15 +92,21 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         let pairing = pairing.clone();
         window.on_forget_device(move |id| {
             let id = id.to_string();
+            let name = pairing
+                .trusted_list()
+                .into_iter()
+                .find(|peer| peer.device_id == id)
+                .map(|peer| peer.name)
+                .unwrap_or_else(|| id.clone());
             let result = pairing.untrust(&id);
             if let Some(window) = window_weak.upgrade() {
                 match result {
                     Ok(true) => {
                         refresh_devices(&window, &pairing);
-                        set_status(&window, format!("已删除设备 {id}"), true);
+                        set_status(&window, format!("已移除 {name}"), true);
                     }
-                    Ok(false) => set_status(&window, format!("设备 {id} 不存在"), false),
-                    Err(err) => set_status(&window, format!("删除失败：{err:#}"), false),
+                    Ok(false) => set_status(&window, "设备不存在".to_string(), false),
+                    Err(err) => set_status(&window, format!("移除失败：{err:#}"), false),
                 }
             }
         });
@@ -176,8 +182,9 @@ fn set_status(window: &SettingsWindow, text: String, success: bool) {
 }
 
 fn refresh_devices(window: &SettingsWindow, pairing: &PairingManager) {
-    let devices: Vec<TrustedDevice> = pairing
-        .trusted_list()
+    let mut peers = pairing.trusted_list();
+    peers.sort_by_key(|peer| peer.name.to_lowercase());
+    let devices: Vec<TrustedDevice> = peers
         .into_iter()
         .map(|peer| TrustedDevice {
             device_id: peer.device_id.into(),
