@@ -74,7 +74,6 @@ struct TrayMenu {
     clear_history: MenuItem,
     connection: MenuItem,
     local: MenuItem,
-    push: MenuItem,
     test_sound: MenuItem,
     quit: MenuItem,
     online_count: usize,
@@ -90,45 +89,41 @@ impl TrayMenu {
             crate::autostart::is_enabled(),
             None,
         );
-        menu.append(&sync)?;
-        menu.append(&autostart)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-
         let scan = MenuItem::new("扫描局域网设备", true, None);
-        menu.append(&scan)?;
         let discovered = Submenu::new("发现的设备 (0)", true);
         let discovered_placeholder = MenuItem::new("未发现设备", false, None);
         discovered.append(&discovered_placeholder)?;
-        menu.append(&discovered)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-
         let requests = Submenu::new("连接请求 (0)", true);
         let request_placeholder = MenuItem::new("无待处理请求", false, None);
         requests.append(&request_placeholder)?;
-        menu.append(&requests)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-
         let devices = Submenu::new("在线设备 (0)", true);
         let placeholder = MenuItem::new("无在线设备", false, None);
         devices.append(&placeholder)?;
-        menu.append(&devices)?;
-
         let history = Submenu::new("剪贴历史 (0)", true);
         let history_placeholder = MenuItem::new("暂无剪贴历史", false, None);
         history.append(&history_placeholder)?;
-        menu.append(&history)?;
         let clear_history = MenuItem::new("清空剪贴历史", false, None);
-        menu.append(&clear_history)?;
-
         let connection = MenuItem::new("连接设置", true, None);
         let local = MenuItem::new("本地设置", true, None);
-        let push = MenuItem::new("推送当前剪贴板", true, None);
         let test_sound = MenuItem::new("测试提示音", true, None);
         let quit = MenuItem::new("退出 LanPaster", true, None);
+
+        // Group the menu by purpose: sync at the top, then network devices,
+        // clipboard history, settings, and finally app-level actions.
+        menu.append(&sync)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&scan)?;
+        menu.append(&discovered)?;
+        menu.append(&requests)?;
+        menu.append(&devices)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&history)?;
+        menu.append(&clear_history)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&connection)?;
         menu.append(&local)?;
         menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&push)?;
+        menu.append(&autostart)?;
         menu.append(&test_sound)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit)?;
@@ -155,7 +150,6 @@ impl TrayMenu {
                 clear_history,
                 connection,
                 local,
-                push,
                 test_sound,
                 quit,
                 online_count: 0,
@@ -426,10 +420,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     open_config_window("connection");
                 } else if id == *menu.local.id() {
                     open_config_window("local");
-                } else if id == *menu.push.id() {
-                    if self.app.sync_enabled.load(Ordering::Relaxed) {
-                        let _ = self.app.clipboard_cmd.send(ClipboardCommand::Push);
-                    }
                 } else if id == *menu.test_sound.id() {
                     crate::sound::play();
                 } else if id == *menu.quit.id() {
