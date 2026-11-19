@@ -35,7 +35,7 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
     window
         .window()
         .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(
-            800.0, 640.0,
+            800.0, 720.0,
         )));
     let trusted_path = config_path.with_extension("trusted.toml");
     let pairing = Rc::new(PairingManager::new(&trusted_path)?);

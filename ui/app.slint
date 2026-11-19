@@ -78,6 +78,7 @@ component Section inherits VerticalLayout {
     }
 
     Rectangle {
+        width: 100%;
         border-radius: Theme.radius-card;
         background: Theme.card-bg;
         border-width: 1px;
@@ -86,6 +87,7 @@ component Section inherits VerticalLayout {
         horizontal-stretch: 1;
 
         VerticalLayout {
+            width: 100%;
             vertical-stretch: 0;
             horizontal-stretch: 1;
             cross-axis-alignment: stretch;
@@ -104,9 +106,9 @@ component TextField inherits Rectangle {
     height: Theme.control-height;
     horizontal-stretch: 1;
     border-radius: Theme.radius-control;
-    background: input.has-focus ? Theme.field-focus-bg : Theme.field-bg;
+    background: input.has-focus && !root.read-only ? Theme.field-focus-bg : Theme.field-bg;
     border-width: 1px;
-    border-color: input.has-focus ? Theme.accent : Theme.field-border;
+    border-color: input.has-focus && !root.read-only ? Theme.accent : Theme.field-border;
     clip: true;
     animate background, border-color { duration: 120ms; }
 
@@ -117,7 +119,7 @@ component TextField inherits Rectangle {
         text <=> root.text;
         single-line: true;
         font-size: Theme.font-body;
-        color: Theme.text;
+        color: root.read-only ? Theme.secondary : Theme.text;
         vertical-alignment: center;
         input-type: root.password && !root.reveal ? InputType.password : InputType.text;
         read-only: root.read-only;
@@ -611,7 +613,7 @@ export component SettingsWindow inherits Window {
                         Separator {}
                         SettingRow {
                             label: "设备指纹";
-                            hint: "首次连接时核对；对方在菜单栏同意";
+                            hint: "首次连接时核对指纹；\n对方在菜单栏“连接请求”里同意";
                             TextField { text <=> root.fingerprint; read-only: true; }
                         }
                         Separator {}
@@ -642,7 +644,9 @@ export component SettingsWindow inherits Window {
                         horizontal-stretch: 1;
 
                         HorizontalLayout {
+                            width: 100%;
                             min-height: Theme.row-height;
+                            vertical-stretch: 0;
                             horizontal-stretch: 1;
                             padding-left: Theme.card-padding;
                             padding-right: 8px;
@@ -689,7 +693,9 @@ export component SettingsWindow inherits Window {
                         }
 
                         if root.trusted-devices.length == 0 : VerticalLayout {
+                            width: 100%;
                             horizontal-stretch: 1;
+                            vertical-stretch: 0;
                             alignment: center;
                             cross-axis-alignment: center;
                             padding-left: 24px;
