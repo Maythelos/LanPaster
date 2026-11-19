@@ -25,6 +25,13 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
     make_regular_app();
 
     let window = SettingsWindow::new().context("create settings window")?;
+    // Linux 桌面按 xdg app id 把窗口关联到 lanpaster.desktop。Slint/winit
+    // 默认不设置，Wayland 下 app id 为空，dock 就会显示通用占位图标。
+    // 必须在窗口 show 之前设置。
+    #[cfg(target_os = "linux")]
+    {
+        let _ = slint::set_xdg_app_id("lanpaster");
+    }
     window
         .window()
         .set_size(slint::WindowSize::Logical(slint::LogicalSize::new(

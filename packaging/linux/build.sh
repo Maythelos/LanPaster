@@ -31,6 +31,7 @@ Icon=lanpaster
 Terminal=false
 Categories=Utility;Network;
 StartupNotify=false
+StartupWMClass=lanpaster
 DESKTOP
 
 # Determine runtime dependencies from the actual binary.
