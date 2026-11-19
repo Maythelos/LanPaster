@@ -2,6 +2,7 @@ use crate::{
     clipboard::{ClipboardCommand, LocalClipboard, RemoteClipboard},
     config::{incoming_dir, Config},
     crypto::handshake,
+    history::{History, HistoryPayload},
     pairing::{decide_trust, PairingManager, TrustDecision},
     protocol::{sha256, ClipKind, ItemMeta, Message, CHUNK_SIZE, PROTOCOL_VERSION},
 };
@@ -170,6 +171,7 @@ pub struct AppContext {
     pub pairing: Arc<PairingManager>,
     pub peers: Arc<PeerManager>,
     pub clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
+    pub history: Arc<History>,
     pub seen: Arc<Mutex<SeenEvents>>,
     pub dialed: Arc<Mutex<HashSet<String>>>,
     pub sync_enabled: Arc<AtomicBool>,
@@ -186,12 +188,14 @@ impl AppContext {
         config: Arc<ArcSwap<Config>>,
         clipboard_cmd: std::sync::mpsc::Sender<ClipboardCommand>,
         pairing: Arc<PairingManager>,
+        history: Arc<History>,
     ) -> Result<Self> {
         Ok(Self {
             config,
             pairing,
             peers: Arc::new(PeerManager::new()),
             clipboard_cmd,
+            history,
             seen: Arc::new(Mutex::new(SeenEvents::new())),
             dialed: Arc::new(Mutex::new(HashSet::new())),
             sync_enabled: Arc::new(AtomicBool::new(true)),
@@ -214,6 +218,20 @@ impl AppContext {
         self.activity_seq.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a local clipboard event in the bounded in-memory history. This
+    /// runs before the sync-enabled check so local history still works with
+    /// syncing paused.
+    pub fn record_local_event(&self, event: &OutgoingEvent, cfg: &Config) {
+        if let Some(payload) = event.history_payload() {
+            self.history.record(
+                payload,
+                "本机",
+                cfg.history_minutes,
+                cfg.history_limit,
+            );
+        }
+    }
+
     /// Apply a new config snapshot. Returns fields that still require a restart.
     pub fn apply_config(&self, new: Config) -> Vec<&'static str> {
         let old = self.config.load_full();
@@ -233,7 +251,10 @@ impl AppContext {
         if old.device_id != new.device_id {
             restart.push("device_id");
         }
+        let history_minutes = new.history_minutes;
+        let history_limit = new.history_limit;
         self.config.store(Arc::new(new));
+        self.history.prune(history_minutes, history_limit);
         restart
     }
 
@@ -383,6 +404,46 @@ pub struct OutgoingEvent {
     pub kind: ClipKind,
     pub items: Vec<OutgoingItem>,
     pub total_size: u64,
+}
+
+impl OutgoingEvent {
+    pub fn history_payload(&self) -> Option<HistoryPayload> {
+        match self.kind {
+            ClipKind::Text => match self.items.first()? {
+                OutgoingItem::Buffer { data, .. } => Some(HistoryPayload::Text(
+                    String::from_utf8_lossy(data.as_slice()).into_owned(),
+                )),
+                OutgoingItem::File { .. } => None,
+            },
+            ClipKind::Image => match self.items.first()? {
+                OutgoingItem::Buffer { meta, data } => Some(HistoryPayload::Image {
+                    mime: meta.mime.clone(),
+                    bytes: data.clone(),
+                    width: meta.width,
+                    height: meta.height,
+                }),
+                OutgoingItem::File { .. } => None,
+            },
+            ClipKind::Files => {
+                let paths: Vec<PathBuf> = self
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        OutgoingItem::File { path, .. } => Some(path.clone()),
+                        OutgoingItem::Buffer { .. } => None,
+                    })
+                    .collect();
+                if paths.is_empty() {
+                    None
+                } else {
+                    Some(HistoryPayload::Files {
+                        paths,
+                        total_size: self.total_size,
+                    })
+                }
+            }
+        }
+    }
 }
 
 pub fn event_from_local(config: &Config, local: LocalClipboard) -> OutgoingEvent {
@@ -1071,7 +1132,12 @@ async fn handle_message(
             let (respond, response) = oneshot::channel();
             if app
                 .clipboard_cmd
-                .send(ClipboardCommand::Write { payload, respond })
+                .send(ClipboardCommand::Write {
+                    payload,
+                    origin: remote_name.to_string(),
+                    record: true,
+                    respond,
+                })
                 .is_err()
             {
                 cleanup_event(event);
@@ -1455,7 +1521,13 @@ mod tests {
             crate::config::random_hex(4)
         ));
         let pairing = Arc::new(PairingManager::new(&pairing_path).unwrap());
-        let app = AppContext::new(config, clip_tx, pairing).unwrap();
+        let app = AppContext::new(
+            config,
+            clip_tx,
+            pairing,
+            Arc::new(crate::history::History::new()),
+        )
+        .unwrap();
 
         let peer = |name: &str, addr: &str| DiscoveredPeer {
             device_id: "dev1".to_string(),
@@ -1473,6 +1545,70 @@ mod tests {
 
         app.remove_discovered("dev1._lanpaster._tcp.local.");
         assert!(app.discovered_list().is_empty());
+        let _ = std::fs::remove_file(pairing_path);
+    }
+
+    #[test]
+    fn config_reload_prunes_history() {
+        let (clip_tx, _clip_rx) = std::sync::mpsc::channel();
+        let config = Arc::new(ArcSwap::from_pointee(Config::default()));
+        let pairing_path = std::env::temp_dir().join(format!(
+            "lanpaster-pairing-test-{}.toml",
+            crate::config::random_hex(4)
+        ));
+        let pairing = Arc::new(PairingManager::new(&pairing_path).unwrap());
+        let history = Arc::new(crate::history::History::new());
+        let app = AppContext::new(config, clip_tx, pairing, history.clone()).unwrap();
+        for value in ["one", "two", "three"] {
+            history.record(
+                HistoryPayload::Text(value.to_string()),
+                "本机",
+                10,
+                20,
+            );
+        }
+        assert_eq!(app.history.snapshot(10, 20).len(), 3);
+        let mut new = (*app.config()).clone();
+        new.history_limit = 1;
+        app.apply_config(new);
+        assert_eq!(app.history.snapshot(10, 20).len(), 1);
+        let _ = std::fs::remove_file(pairing_path);
+    }
+
+    #[test]
+    fn local_events_are_added_to_history() {
+        let (clip_tx, _clip_rx) = std::sync::mpsc::channel();
+        let config = Arc::new(ArcSwap::from_pointee(Config::default()));
+        let pairing_path = std::env::temp_dir().join(format!(
+            "lanpaster-pairing-test-{}.toml",
+            crate::config::random_hex(4)
+        ));
+        let pairing = Arc::new(PairingManager::new(&pairing_path).unwrap());
+        let history = Arc::new(crate::history::History::new());
+        let app = AppContext::new(config, clip_tx, pairing, history.clone()).unwrap();
+        let cfg = app.config();
+        let event = OutgoingEvent {
+            id: 1,
+            origin: cfg.device_id.clone(),
+            kind: ClipKind::Text,
+            total_size: 5,
+            items: vec![OutgoingItem::Buffer {
+                meta: ItemMeta {
+                    name: None,
+                    mime: "text/plain;charset=utf-8".to_string(),
+                    size: 5,
+                    width: None,
+                    height: None,
+                    hash: Some(sha256(b"hello")),
+                },
+                data: Arc::new(b"hello".to_vec()),
+            }],
+        };
+        app.record_local_event(&event, &cfg);
+        let items = history.snapshot(cfg.history_minutes, cfg.history_limit);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].preview(), "hello");
+        assert_eq!(items[0].origin, "本机");
         let _ = std::fs::remove_file(pairing_path);
     }
 }

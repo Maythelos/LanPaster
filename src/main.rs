@@ -4,6 +4,7 @@ mod clipboard;
 mod client;
 mod config;
 mod crypto;
+mod history;
 mod instance;
 mod mdns;
 mod net;
@@ -246,11 +247,27 @@ fn run(args: &[String]) -> Result<()> {
 async fn start_services(cfg: Config, config_path: PathBuf) -> Result<Arc<AppContext>> {
     let (local_tx, mut local_rx) = tokio_mpsc::unbounded_channel();
     let config = Arc::new(ArcSwap::from_pointee(cfg.clone()));
-    let clipboard_cmd = clipboard::spawn(config.clone(), local_tx)
+    let history = Arc::new(history::History::new());
+    let clipboard_cmd = clipboard::spawn(config.clone(), local_tx, history.clone())
         .map_err(|e| anyhow::anyhow!("clipboard thread: {e}"))?;
     let trusted_path = config_path.with_extension("trusted.toml");
     let pairing = Arc::new(pairing::PairingManager::new(trusted_path)?);
-    let app = Arc::new(AppContext::new(config, clipboard_cmd, pairing)?);
+    let app = Arc::new(AppContext::new(config, clipboard_cmd, pairing, history)?);
+
+    // Enforce the history age window even when no tray UI is polling it
+    // (headless mode). The tray also prunes on every refresh.
+    {
+        let history_app = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let cfg = history_app.config();
+                history_app
+                    .history
+                    .prune(cfg.history_minutes, cfg.history_limit);
+            }
+        });
+    }
 
     // The settings window is a separate process, so watch the trusted file for
     // removals. Drop live connections immediately and make sure the removed
@@ -351,6 +368,7 @@ async fn start_services(cfg: Config, config_path: PathBuf) -> Result<Arc<AppCont
         while let Some(local) = local_rx.recv().await {
             let cfg = event_app.config();
             let event = event_from_local(&cfg, local);
+            event_app.record_local_event(&event, &cfg);
             if !event_app.sync_enabled.load(Ordering::Relaxed) {
                 info!("sync disabled; dropping local clipboard event");
                 continue;

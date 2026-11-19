@@ -313,6 +313,8 @@ fn fill_form(window: &SettingsWindow, config: &Config) {
     window.set_max_file_mb(config.max_file_mb.to_string().into());
     window.set_max_batch_mb(config.max_batch_mb.to_string().into());
     window.set_max_files(config.max_files.to_string().into());
+    window.set_history_minutes(config.history_minutes.to_string().into());
+    window.set_history_limit(config.history_limit.to_string().into());
     window.set_file_sync(config.file_sync);
     window.set_sound_enabled(config.sound_enabled);
 }
@@ -340,6 +342,8 @@ fn save_local(path: &std::path::Path, fallback: &Config, form: &LocalForm) -> Re
     cfg.max_file_mb = parse_u64(&form.max_file_mb, "单文件 / 图片上限")?;
     cfg.max_batch_mb = parse_u64(&form.max_batch_mb, "单次总量上限")?;
     cfg.max_files = parse_usize(&form.max_files, "文件数量上限")?;
+    cfg.history_minutes = parse_u64(&form.history_minutes, "历史保留时长")?;
+    cfg.history_limit = parse_usize(&form.history_limit, "历史条目上限")?;
     cfg.file_sync = form.file_sync;
     cfg.sound_enabled = form.sound_enabled;
     cfg.validate()?;
@@ -430,6 +434,8 @@ mod tests {
             max_file_mb: "100".into(),
             max_batch_mb: "200".into(),
             max_files: "50".into(),
+            history_minutes: "10".into(),
+            history_limit: "20".into(),
             file_sync: true,
             sound_enabled: false,
         };
@@ -445,6 +451,8 @@ mod tests {
         save_local(&path, &initial, &form).unwrap();
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(cfg.max_file_mb, 100);
+        assert_eq!(cfg.history_minutes, 10);
+        assert_eq!(cfg.history_limit, 20);
         assert!(!cfg.sound_enabled);
         let _ = std::fs::remove_file(path);
     }

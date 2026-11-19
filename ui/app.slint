@@ -382,6 +382,8 @@ export struct LocalForm {
     max-file-mb: string,
     max-batch-mb: string,
     max-files: string,
+    history-minutes: string,
+    history-limit: string,
     file-sync: bool,
     sound-enabled: bool,
 }
@@ -402,6 +404,8 @@ export component SettingsWindow inherits Window {
     in-out property <string> max-file-mb: "";
     in-out property <string> max-batch-mb: "";
     in-out property <string> max-files: "";
+    in-out property <string> history-minutes: "";
+    in-out property <string> history-limit: "";
     in-out property <bool> file-sync: true;
     in-out property <bool> sound-enabled: true;
     in-out property <string> status: "";
@@ -821,6 +825,22 @@ export component SettingsWindow inherits Window {
                     }
 
                     Section {
+                        title: "剪贴历史";
+                        horizontal-stretch: 1;
+                        SettingRow {
+                            label: "保留时长 (分钟)";
+                            hint: "仅内存；0 表示关闭";
+                            TextField { text <=> root.history-minutes; placeholder: "10"; }
+                        }
+                        Separator {}
+                        SettingRow {
+                            label: "最多条目数";
+                            hint: "仅内存；0 表示关闭";
+                            TextField { text <=> root.history-limit; placeholder: "20"; }
+                        }
+                    }
+
+                    Section {
                         title: "行为";
                         horizontal-stretch: 1;
                         ToggleRow {
@@ -875,6 +895,8 @@ export component SettingsWindow inherits Window {
                                 max-file-mb: root.max-file-mb,
                                 max-batch-mb: root.max-batch-mb,
                                 max-files: root.max-files,
+                                history-minutes: root.history-minutes,
+                                history-limit: root.history-limit,
                                 file-sync: root.file-sync,
                                 sound-enabled: root.sound-enabled,
                             });

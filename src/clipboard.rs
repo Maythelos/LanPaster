@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::{config::Config, history::History};
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use clipboard_rs::{
@@ -58,6 +58,10 @@ pub enum RemoteClipboard {
 pub enum ClipboardCommand {
     Write {
         payload: RemoteClipboard,
+        /// Device name shown in the history list ("本机" for local items).
+        origin: String,
+        /// Store the applied payload in the in-memory history.
+        record: bool,
         respond: oneshot::Sender<Result<()>>,
     },
     /// Re-read the local clipboard and emit it as a local event.
@@ -104,6 +108,7 @@ fn start_watcher(cmd_tx: mpsc::Sender<ClipboardCommand>) -> bool {
 pub fn spawn(
     config: Arc<ArcSwap<Config>>,
     events: tokio_mpsc::UnboundedSender<LocalClipboard>,
+    history: Arc<History>,
 ) -> std::result::Result<std::sync::mpsc::Sender<ClipboardCommand>, String> {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let watcher_tx = cmd_tx.clone();
@@ -111,7 +116,7 @@ pub fn spawn(
         .name("lanpaster-clipboard".to_string())
         .spawn(move || {
             let watcher_active = start_watcher(watcher_tx);
-            if let Err(err) = run(config, events, cmd_rx, watcher_active) {
+            if let Err(err) = run(config, events, history, cmd_rx, watcher_active) {
                 warn!("clipboard thread stopped: {err:#}");
             }
         })
@@ -122,6 +127,7 @@ pub fn spawn(
 fn run(
     config: Arc<ArcSwap<Config>>,
     events: tokio_mpsc::UnboundedSender<LocalClipboard>,
+    history: Arc<History>,
     commands: mpsc::Receiver<ClipboardCommand>,
     watcher_active: bool,
 ) -> Result<()> {
@@ -139,6 +145,7 @@ fn run(
                 &ctx,
                 &cfg,
                 &events,
+                &history,
                 &mut last_fp,
                 &mut suppress_next,
                 &mut last_image_mime,
@@ -185,6 +192,7 @@ fn run(
                     &ctx,
                     &cfg,
                     &events,
+                    &history,
                     &mut last_fp,
                     &mut suppress_next,
                     &mut last_image_mime,
@@ -231,13 +239,19 @@ fn apply_command(
     ctx: &ClipboardContext,
     config: &Config,
     events: &tokio_mpsc::UnboundedSender<LocalClipboard>,
+    history: &History,
     last_fp: &mut Option<Vec<u8>>,
     suppress_next: &mut bool,
     last_image_mime: &mut Option<String>,
     command: ClipboardCommand,
 ) -> bool {
     match command {
-        ClipboardCommand::Write { payload, respond } => {
+        ClipboardCommand::Write {
+            payload,
+            origin,
+            record,
+            respond,
+        } => {
             let image_mime = match &payload {
                 RemoteClipboard::Image { mime, .. } => Some(mime.clone()),
                 _ => None,
@@ -249,6 +263,14 @@ fn apply_command(
                 }
                 *last_fp = None;
                 *suppress_next = true;
+                if record {
+                    history.record_remote(
+                        payload,
+                        &origin,
+                        config.history_minutes,
+                        config.history_limit,
+                    );
+                }
             }
             let _ = respond.send(result);
             true

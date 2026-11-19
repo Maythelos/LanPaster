@@ -23,6 +23,10 @@ pub struct Config {
     pub file_sync: bool,
     pub sound_enabled: bool,
     pub cache_max_mb: u64,
+    /// How long in-memory clipboard history entries are kept.
+    pub history_minutes: u64,
+    /// Maximum number of in-memory clipboard history entries.
+    pub history_limit: usize,
     pub mdns_enabled: bool,
     /// Manual peers in `host:port` form.
     pub peers: Vec<String>,
@@ -49,6 +53,8 @@ impl Default for Config {
             file_sync: true,
             sound_enabled: true,
             cache_max_mb: 1024,
+            history_minutes: 10,
+            history_limit: 20,
             mdns_enabled: true,
             peers: Vec::new(),
             log_level: "info".to_string(),

@@ -1,5 +1,6 @@
 use crate::{
     clipboard::ClipboardCommand,
+    history::HistoryItem,
     net::AppContext,
     pairing::PendingInfo,
     protocol::PROTOCOL_VERSION,
@@ -41,6 +42,7 @@ enum UserEvent {
     OpenConfig(&'static str),
     Peers(Vec<(String, String)>),
     Discovered(Vec<DiscoveredEntry>),
+    History(Vec<Arc<HistoryItem>>),
     Pairing(Vec<PendingInfo>),
     Activity,
 }
@@ -66,6 +68,10 @@ struct TrayMenu {
     request_actions: HashMap<String, (String, bool)>,
     devices: Submenu,
     device_items: Vec<MenuItem>,
+    history: Submenu,
+    history_items: Vec<MenuItem>,
+    history_actions: HashMap<String, Arc<HistoryItem>>,
+    clear_history: MenuItem,
     connection: MenuItem,
     local: MenuItem,
     push: MenuItem,
@@ -107,6 +113,13 @@ impl TrayMenu {
         devices.append(&placeholder)?;
         menu.append(&devices)?;
 
+        let history = Submenu::new("剪贴历史 (0)", true);
+        let history_placeholder = MenuItem::new("暂无剪贴历史", false, None);
+        history.append(&history_placeholder)?;
+        menu.append(&history)?;
+        let clear_history = MenuItem::new("清空剪贴历史", false, None);
+        menu.append(&clear_history)?;
+
         let connection = MenuItem::new("连接设置", true, None);
         let local = MenuItem::new("本地设置", true, None);
         let push = MenuItem::new("推送当前剪贴板", true, None);
@@ -136,6 +149,10 @@ impl TrayMenu {
                 request_actions: HashMap::new(),
                 devices,
                 device_items: vec![placeholder],
+                history,
+                history_items: vec![history_placeholder],
+                history_actions: HashMap::new(),
+                clear_history,
                 connection,
                 local,
                 push,
@@ -248,6 +265,37 @@ impl TrayMenu {
         self.discovered
             .set_text(format!("发现的设备 ({})", peers.len()));
     }
+
+    fn update_history(&mut self, items: &[Arc<HistoryItem>]) {
+        for item in self.history_items.drain(..) {
+            let _ = self.history.remove(&item);
+        }
+        self.history_actions.clear();
+        if items.is_empty() {
+            let item = MenuItem::new("暂无剪贴历史", false, None);
+            let _ = self.history.append(&item);
+            self.history_items.push(item);
+        } else {
+            for entry in items {
+                let restorable = entry.is_restorable();
+                let origin: String = entry.origin.chars().take(20).collect();
+                let label = if restorable {
+                    format!("[{origin}] {}", entry.preview())
+                } else {
+                    format!("[{origin}] {}（文件已失效）", entry.preview())
+                };
+                let item = MenuItem::new(label, restorable, None);
+                if restorable {
+                    self.history_actions
+                        .insert(item.id().as_ref().to_string(), entry.clone());
+                }
+                let _ = self.history.append(&item);
+                self.history_items.push(item);
+            }
+        }
+        self.history.set_text(format!("剪贴历史 ({})", items.len()));
+        self.clear_history.set_enabled(!items.is_empty());
+    }
 }
 
 struct AppHandler {
@@ -304,6 +352,42 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.runtime.spawn(async move {
                         app.connect_discovered(&device_id).await;
                     });
+                    return;
+                }
+                if let Some(entry) = menu.history_actions.get(id.as_ref()).cloned() {
+                    let clipboard = self.app.clipboard_cmd.clone();
+                    let origin = entry.origin.clone();
+                    self.runtime.spawn(async move {
+                        let Some(payload) = entry.to_remote() else {
+                            warn!("clipboard history entry is no longer available");
+                            return;
+                        };
+                        let (respond, response) = tokio::sync::oneshot::channel();
+                        if clipboard
+                            .send(ClipboardCommand::Write {
+                                payload,
+                                origin: origin.clone(),
+                                record: false,
+                                respond,
+                            })
+                            .is_ok()
+                        {
+                            match response.await {
+                                Ok(Ok(())) => {
+                                    info!("restored clipboard history from {origin}")
+                                }
+                                Ok(Err(err)) => {
+                                    warn!("restore clipboard history failed: {err:#}")
+                                }
+                                Err(_) => warn!("clipboard thread unavailable"),
+                            }
+                        }
+                    });
+                    return;
+                }
+                if id == *menu.clear_history.id() {
+                    self.app.history.clear();
+                    menu.update_history(&[]);
                     return;
                 }
                 if let Some((key, approve)) = menu.request_actions.get(id.as_ref()).cloned() {
@@ -375,6 +459,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 debug!("tray discovery update: {} device(s)", peers.len());
                 if let Some(menu) = self.menu.as_mut() {
                     menu.update_discovered(&peers, self.app.config.load().mdns_enabled);
+                }
+            }
+            UserEvent::History(items) => {
+                debug!("tray history update: {} item(s)", items.len());
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.update_history(&items);
                 }
             }
             UserEvent::Activity => {
@@ -503,6 +593,29 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
             }
             last_key = key;
             let _ = proxy.send_event(UserEvent::Discovered(entries));
+        }
+    });
+
+    let proxy = event_loop.create_proxy();
+    let history_app = app.clone();
+    runtime.spawn(async move {
+        let mut last_key = String::new();
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let cfg = history_app.config.load_full();
+            let items = history_app
+                .history
+                .snapshot(cfg.history_minutes, cfg.history_limit);
+            let key = items
+                .iter()
+                .map(|item| format!("{}\u{1f}{}", item.id, item.is_restorable()))
+                .collect::<Vec<_>>()
+                .join("\u{1e}");
+            if key == last_key {
+                continue;
+            }
+            last_key = key;
+            let _ = proxy.send_event(UserEvent::History(items));
         }
     });
 

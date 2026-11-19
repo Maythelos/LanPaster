@@ -2,7 +2,7 @@
 
 局域网剪贴板同步工具的可运行版本。
 
-当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、设备身份 + 首次连接批准、mDNS 主动扫描、请求连接、手动 IP 直连、大小阈值、文件临时落地、原生系统托盘、单窗口设置中心（Cupertino 风格，左侧连接 / 本地）、提示音、开机自启、单实例和配置热加载。
+当前版本包含同步内核和桌面入口：**文本 / 图片 / 文件** 三类剪贴内容、设备身份 + 首次连接批准、mDNS 发现与手动连接、请求连接、手动 IP 直连、大小阈值、文件临时落地、内存剪贴历史、原生系统托盘、单窗口设置中心（Cupertino 风格，左侧连接 / 本地）、提示音、开机自启、单实例和配置热加载。
 
 ## 已实现
 
@@ -41,13 +41,14 @@
 - 提示音：收到远端剪贴后播放短提示音；托盘菜单“测试提示音”，配置面板可关闭
 - 开机自启：macOS LaunchAgent、Windows 注册表 Run、Linux XDG autostart；托盘菜单可勾选，也可用 CLI
 - 单实例：按配置文件路径加文件锁；同一配置只允许一个守护进程
-- 配置热加载：阈值、文件同步、提示音、轮询间隔修改后自动生效；端口、mDNS、手动节点、设备身份仍需重启
+- 配置热加载：阈值、文件同步、提示音、轮询间隔、历史保留时长 / 条数修改后自动生效；端口、mDNS、手动节点、设备身份仍需重启
 - 剪贴板监听优化：优先使用 `clipboard-rs` 平台 watcher（macOS 实测生效），失败时退回轮询；watcher 有效时保留 10 秒兜底轮询
 - 接收文件缓存：按 `cache_max_mb` 自动删除旧事件目录，保留最新一次文件剪贴
+- 内存剪贴历史：最近 `history_minutes` 分钟内最多 `history_limit` 条，支持文本 / 图片 / 文件，托盘菜单可点击恢复到剪贴板；不落盘
 
 ## 尚未实现
 
-- 剪贴历史
+- 剪贴历史持久化（当前历史仅保存在内存，退出即清空）
 - Linux GNOME Wayland 的原生后台剪贴板监听（Mutter 不实现 data-control；目前只能依赖 XWayland 或桌面扩展）
 - 目录、符号链接、断点续传（一期仅常规文件）
 - `.app` / Windows exe / Linux AppImage 打包
@@ -198,6 +199,8 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 | `file_sync` | true | 文件同步开关 |
 | `sound_enabled` | true | 收到远端剪贴时是否播放提示音 |
 | `cache_max_mb` | 1024 | 接收临时文件缓存上限，超出清理旧事件目录 |
+| `history_minutes` | 10 | 内存剪贴历史保留时长（分钟），0 表示关闭 |
+| `history_limit` | 20 | 内存剪贴历史最多条目数，0 表示关闭 |
 | `mdns_enabled` | true | mDNS 自动发现开关 |
 | `peers` | `[]` | 手动直连地址列表 |
 | `log_level` | info | `RUST_LOG` 可覆盖，如 `RUST_LOG=debug` |
@@ -213,6 +216,20 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 - Windows: `%LOCALAPPDATA%\LanPaster\cache\incoming\...`
 
 接收成功后会把本地临时文件列表写入剪贴板，可以直接在 Finder / Explorer / 文件管理器中粘贴。每次成功接收文件后会检查 `cache_max_mb`，按目录时间删除旧事件目录，最新一次文件剪贴会保留。程序启动时也会清空旧接收目录。
+
+## 剪贴历史
+
+历史只保存在内存里，进程退出即清空，不会写入磁盘：
+
+- `history_minutes`：只保留最近 N 分钟内的内容，默认 10 分钟
+- `history_limit`：最多保留 M 条，默认 20 条
+- 任一为 0 即关闭历史
+- 托盘菜单「剪贴历史」按时间倒序列出，点击即可恢复到系统剪贴板
+- 托盘菜单「清空剪贴历史」可立即清空全部历史
+- 文本 / 图片会完整保存在内存中，文件只保存路径；源文件或接收缓存被清理后，对应历史项会标记为「文件已失效」
+- 相同内容再次复制会移到列表最前面，不会重复占位
+
+注意：图片按 `max_file_mb` 限制完整保存在内存中，调大图片上限或历史条目数时要留意内存占用。历史里是剪贴板明文内容，复制过密码等敏感信息后可用「清空剪贴历史」立即清除。
 
 ## 安全说明
 
@@ -231,6 +248,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 - `src/protocol.rs`：消息定义、bincode 编解码、chunk 大小
 - `src/crypto.rs`：Noise 握手与加密帧
 - `src/net.rs`：TCP 监听、拨号、连接管理、文件/图片/文本传输、限额校验
+- `src/history.rs`：内存剪贴历史（按时间和条数淘汰）
 - `src/mdns.rs`：mDNS 注册与发现
 - `src/tray.rs`：原生托盘、菜单事件、winit 事件循环
 - `src/ui.rs`：Slint 配置面板（独立进程）
@@ -259,6 +277,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 - 提示音命令、开机自启写入/移除
 - 同一配置第二个实例被拒绝
 - 修改 `max_text_kb` 后无需重启立即生效
+- 内存剪贴历史的 N/M 淘汰、去重、文件失效过滤（逻辑单测覆盖）
 - `clipboard-rs` 平台 watcher 在 macOS 上生效
 - 两次 700KB 文件接收后只保留最新事件目录
 - Universal `.app`（arm64 + x86_64）构建、ad-hoc 签名、DMG 挂载验证通过
@@ -275,5 +294,5 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 1. Windows / Linux 实机验证与打包
 2. macOS 公证 / Developer ID 签名（可选）
 3. 配置热加载扩展到端口 / mDNS / 手动节点
-4. 剪贴历史、设备管理
+4. 持久化剪贴历史、设备管理
 5. 目录同步 / 断点续传
