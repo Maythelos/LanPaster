@@ -3,8 +3,12 @@ name = "lanpaster"
 version = "0.7.11"
 edition = "2021"
 rust-version = "1.80"
-description = "LAN clipboard sync tool"
+description = "LAN clipboard sync for text, images and files"
 license = "GPL-3.0-only"
+repository = "https://github.com/Maythelos/LanPaster"
+readme = "README.md"
+keywords = ["clipboard", "lan", "p2p", "sync", "tray"]
+categories = ["command-line-utilities", "gui", "network-programming"]
 
 [dependencies]
 anyhow = "1"

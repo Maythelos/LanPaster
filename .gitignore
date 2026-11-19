@@ -1,5 +1,27 @@
+# Build output
 /target
+/dist
+
+# OS / editor files
 .DS_Store
 *.swp
 .openidea/
-dist/
+.idea/
+.vscode/
+*.code-workspace
+
+# Local runtime data and secrets
+config.toml
+*.trusted.toml
+*.log
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.tmp
+
+# Internal notes kept locally, not published
+/AGENTS.md
+/LanPaster 局域网剪贴板同步工具 · 需求与技术方案文档.md
