@@ -65,21 +65,28 @@ fn send(args: &[String]) -> Result<()> {
     } else {
         client::read_stdin()?
     };
-    let (cfg, _) = load_config()?;
+    let (cfg, path) = load_config()?;
     cfg.validate()?;
     init_logging(&cfg.log_level);
+    let pairing = pairing::PairingManager::new(path.with_extension("trusted.toml"))?;
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_text(&cfg, &addr, text))
+    runtime.block_on(client::send_text(&cfg, &pairing, &addr, text))
 }
 
 fn send_file(args: &[String]) -> Result<()> {
     let addr = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-file <host:port> <path>"))?;
-    let path = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-file <host:port> <path>"))?;
-    let (cfg, _) = load_config()?;
+    let file = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-file <host:port> <path>"))?;
+    let (cfg, config_path) = load_config()?;
     cfg.validate()?;
     init_logging(&cfg.log_level);
+    let pairing = pairing::PairingManager::new(config_path.with_extension("trusted.toml"))?;
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_file(&cfg, addr, std::path::Path::new(path)))
+    runtime.block_on(client::send_file(
+        &cfg,
+        &pairing,
+        addr,
+        std::path::Path::new(file),
+    ))
 }
 
 fn send_files(args: &[String]) -> Result<()> {
@@ -87,21 +94,28 @@ fn send_files(args: &[String]) -> Result<()> {
     if args.len() < 3 {
         anyhow::bail!("usage: lanpaster send-files <host:port> <path>...");
     }
-    let (cfg, _) = load_config()?;
+    let (cfg, path) = load_config()?;
     cfg.validate()?;
     init_logging(&cfg.log_level);
+    let pairing = pairing::PairingManager::new(path.with_extension("trusted.toml"))?;
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_files(&cfg, addr, &args[2..]))
+    runtime.block_on(client::send_files(&cfg, &pairing, addr, &args[2..]))
 }
 
 fn send_image(args: &[String]) -> Result<()> {
     let addr = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-image <host:port> <path>"))?;
-    let path = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-image <host:port> <path>"))?;
-    let (cfg, _) = load_config()?;
+    let file = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-image <host:port> <path>"))?;
+    let (cfg, config_path) = load_config()?;
     cfg.validate()?;
     init_logging(&cfg.log_level);
+    let pairing = pairing::PairingManager::new(config_path.with_extension("trusted.toml"))?;
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_image(&cfg, addr, std::path::Path::new(path)))
+    runtime.block_on(client::send_image(
+        &cfg,
+        &pairing,
+        addr,
+        std::path::Path::new(file),
+    ))
 }
 
 fn autostart_cmd(args: &[String]) -> Result<()> {
@@ -237,6 +251,49 @@ async fn start_services(cfg: Config, config_path: PathBuf) -> Result<Arc<AppCont
     let trusted_path = config_path.with_extension("trusted.toml");
     let pairing = Arc::new(pairing::PairingManager::new(trusted_path)?);
     let app = Arc::new(AppContext::new(config, clipboard_cmd, pairing)?);
+
+    // The settings window is a separate process, so watch the trusted file for
+    // removals. Drop live connections immediately and make sure the removed
+    // device is remembered, instead of waiting for the next reconnect.
+    {
+        let watch_app = app.clone();
+        tokio::spawn(async move {
+            let mut last = watch_app.pairing.trusted_list();
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let current = watch_app.pairing.trusted_list();
+                let removed: Vec<_> = last
+                    .iter()
+                    .filter(|old| {
+                        !current.iter().any(|new| {
+                            new.device_id == old.device_id
+                                && new.public_key.eq_ignore_ascii_case(&old.public_key)
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                if removed.is_empty() {
+                    last = current;
+                    continue;
+                }
+                for peer in &removed {
+                    info!(
+                        "trusted peer removed: {} ({})",
+                        peer.name, peer.device_id
+                    );
+                    let _ = watch_app.pairing.revoke(
+                        &peer.device_id,
+                        &peer.name,
+                        &peer.public_key,
+                    );
+                    watch_app
+                        .unpair_peer(&peer.device_id, "本机已移除该设备")
+                        .await;
+                }
+                last = watch_app.pairing.trusted_list();
+            }
+        });
+    }
 
     for peer in &cfg.peers {
         app.ensure_dial(peer.clone()).await;

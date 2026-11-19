@@ -302,7 +302,10 @@ fn read_files(ctx: &ClipboardContext, config: &Config) -> Option<LocalClipboard>
     let mut metas = Vec::with_capacity(files.len());
     let mut total = 0u64;
     for raw in files {
-        let path = PathBuf::from(raw);
+        let Some(path) = file_entry_to_path(&raw) else {
+            debug!("skip clipboard file entry: {raw}");
+            return None;
+        };
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(m) => m,
             Err(err) => {
@@ -350,6 +353,18 @@ fn read_files(ctx: &ClipboardContext, config: &Config) -> Option<LocalClipboard>
         total_size: total,
         fingerprint,
     })
+}
+
+/// Linux clipboards report files as `file://` URIs, while macOS and Windows
+/// report native paths. Normalize both forms before touching the filesystem.
+fn file_entry_to_path(raw: &str) -> Option<PathBuf> {
+    if raw.starts_with("file://") {
+        return url::Url::parse(raw).ok()?.to_file_path().ok();
+    }
+    if raw.starts_with("file:") {
+        return None;
+    }
+    Some(PathBuf::from(raw))
 }
 
 fn read_image(
@@ -571,5 +586,46 @@ fn platform_image_format(mime: &str) -> &str {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         mime
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_uri_is_decoded_to_path() {
+        let path = file_entry_to_path(
+            "file:///home/wyj/%E4%B8%8B%E8%BD%BD/%E6%8E%92%E6%9C%9F.zip",
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("/home/wyj/下载/排期.zip"));
+    }
+
+    #[test]
+    fn localhost_file_uri_is_accepted() {
+        assert_eq!(
+            file_entry_to_path("file://localhost/tmp/a%20b.txt"),
+            Some(PathBuf::from("/tmp/a b.txt"))
+        );
+    }
+
+    #[test]
+    fn native_paths_pass_through() {
+        assert_eq!(
+            file_entry_to_path("/Users/me/Downloads/a.txt"),
+            Some(PathBuf::from("/Users/me/Downloads/a.txt"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn remote_file_uri_is_rejected() {
+        assert_eq!(file_entry_to_path("file://server/share/a.txt"), None);
+    }
+
+    #[test]
+    fn unsupported_file_scheme_is_rejected() {
+        assert_eq!(file_entry_to_path("file:relative.txt"), None);
     }
 }

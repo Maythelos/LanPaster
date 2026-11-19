@@ -129,6 +129,48 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         });
     }
 
+    {
+        let window_weak = window.as_weak();
+        let pairing = pairing.clone();
+        window.on_allow_device(move |id| {
+            let id = id.to_string();
+            let name = pairing
+                .revoked_list()
+                .into_iter()
+                .find(|peer| peer.device_id == id)
+                .map(|peer| peer.name)
+                .unwrap_or_else(|| id.clone());
+            let result = pairing.allow(&id);
+            if let Some(window) = window_weak.upgrade() {
+                match result {
+                    Ok(true) => {
+                        refresh_devices(&window, &pairing);
+                        set_status(&window, format!("已恢复 {name}，重新连接时需再次配对"), true);
+                    }
+                    Ok(false) => set_status(&window, "设备不存在".to_string(), false),
+                    Err(err) => set_status(&window, format!("恢复失败：{err:#}"), false),
+                }
+            }
+        });
+    }
+
+    {
+        let window_weak = window.as_weak();
+        let pairing = pairing.clone();
+        window.on_allow_all_devices(move || {
+            let result = pairing.allow_all();
+            if let Some(window) = window_weak.upgrade() {
+                match result {
+                    Ok(count) => {
+                        refresh_devices(&window, &pairing);
+                        set_status(&window, format!("已恢复 {count} 台设备"), true);
+                    }
+                    Err(err) => set_status(&window, format!("恢复失败：{err:#}"), false),
+                }
+            }
+        });
+    }
+
     // The settings window is a separate process. When it was opened from the
     // tray, close it as soon as the tray daemon releases the per-config lock.
     // A standalone `lanpaster ui` (no daemon running) stays usable.
@@ -154,9 +196,34 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         }
     };
 
+    // Pick up trust changes made by the daemon (for example when the peer
+    // removes this device) without reopening the window.
+    let device_timer = {
+        let window_weak = window.as_weak();
+        let pairing = pairing.clone();
+        let mut last_key = String::new();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(1),
+            move || {
+                let key = device_list_key(&pairing);
+                if key == last_key {
+                    return;
+                }
+                last_key = key;
+                if let Some(window) = window_weak.upgrade() {
+                    refresh_devices(&window, &pairing);
+                }
+            },
+        );
+        timer
+    };
+
     window.show().context("show settings window")?;
     slint::run_event_loop().context("slint event loop")?;
     drop(daemon_timer);
+    drop(device_timer);
     Ok(())
 }
 
@@ -181,6 +248,22 @@ fn set_status(window: &SettingsWindow, text: String, success: bool) {
     window.set_status(text.into());
 }
 
+fn device_list_key(pairing: &PairingManager) -> String {
+    let mut parts: Vec<String> = pairing
+        .trusted_list()
+        .into_iter()
+        .map(|p| format!("t\u{1f}{}\u{1f}{}\u{1f}{}", p.device_id, p.name, p.public_key))
+        .collect();
+    parts.extend(
+        pairing
+            .revoked_list()
+            .into_iter()
+            .map(|p| format!("r\u{1f}{}\u{1f}{}\u{1f}{}", p.device_id, p.name, p.public_key)),
+    );
+    parts.sort();
+    parts.join("\u{1e}")
+}
+
 fn refresh_devices(window: &SettingsWindow, pairing: &PairingManager) {
     let mut peers = pairing.trusted_list();
     peers.sort_by_key(|peer| peer.name.to_lowercase());
@@ -196,6 +279,21 @@ fn refresh_devices(window: &SettingsWindow, pairing: &PairingManager) {
         })
         .collect();
     window.set_trusted_devices(slint::ModelRc::new(slint::VecModel::from(devices)));
+
+    let mut revoked = pairing.revoked_list();
+    revoked.sort_by_key(|peer| peer.name.to_lowercase());
+    let removed: Vec<RevokedDevice> = revoked
+        .into_iter()
+        .map(|peer| RevokedDevice {
+            device_id: peer.device_id.into(),
+            name: peer.name.into(),
+            fingerprint: PairingManager::fingerprint(
+                &hex::decode(&peer.public_key).unwrap_or_default(),
+            )
+            .into(),
+        })
+        .collect();
+    window.set_revoked_devices(slint::ModelRc::new(slint::VecModel::from(removed)));
 }
 
 fn fill_form(window: &SettingsWindow, config: &Config) {

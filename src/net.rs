@@ -2,7 +2,7 @@ use crate::{
     clipboard::{ClipboardCommand, LocalClipboard, RemoteClipboard},
     config::{incoming_dir, Config},
     crypto::handshake,
-    pairing::PairingManager,
+    pairing::{decide_trust, PairingManager, TrustDecision},
     protocol::{sha256, ClipKind, ItemMeta, Message, CHUNK_SIZE, PROTOCOL_VERSION},
 };
 use anyhow::{bail, Context, Result};
@@ -39,6 +39,8 @@ pub struct Peer {
     pub device_id: String,
     pub device_name: String,
     pub tx: mpsc::Sender<Message>,
+    /// Sends one final message (then closes) to this connection.
+    pub close: mpsc::Sender<Option<Message>>,
     pub pending: Arc<Mutex<HashMap<u64, mpsc::Sender<Control>>>>,
     pub conn_id: u64,
     pub cancel: CancellationToken,
@@ -228,6 +230,27 @@ impl AppContext {
         tokio::spawn(async move {
             dial_loop(addr, app).await;
         });
+    }
+
+    /// Tell a connected peer that the pairing is gone, then close the
+    /// connection. The writer gets a chance to flush the Unpair message before
+    /// the connection is torn down.
+    pub async fn unpair_peer(&self, device_id: &str, reason: &str) {
+        let peers = self.peers.snapshot().await;
+        for peer in peers.into_iter().filter(|p| p.device_id == device_id) {
+            info!("closing connection to {}: {reason}", peer.device_name);
+            // Take it out of the broadcast set immediately so no clipboard
+            // event can be sent after the user removed the device.
+            self.peers.unregister(&peer.device_id, peer.conn_id).await;
+            let _ = peer.close.try_send(Some(Message::Unpair {
+                reason: reason.to_string(),
+            }));
+            let cancel = peer.cancel.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                cancel.cancel();
+            });
+        }
     }
 }
 
@@ -533,21 +556,24 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     let (mut reader, mut writer, remote_static) =
         handshake(stream, &private_key, initiator).await?;
 
+    let remote_key = hex::encode(&remote_static);
     writer
         .send(&Message::Hello {
             device_id: local.device_id.clone(),
             device_name: local.device_name.clone(),
             version: PROTOCOL_VERSION,
+            trusts_me: app.pairing.is_trusted_key(&remote_key),
         })
         .await?;
 
     let hello = reader.recv().await?;
-    let (remote_id, remote_name, version) = match hello {
+    let (remote_id, remote_name, version, remote_trusts_me) = match hello {
         Message::Hello {
             device_id,
             device_name,
             version,
-        } => (device_id, device_name, version),
+            trusts_me,
+        } => (device_id, device_name, version, trusts_me),
         other => bail!("expected hello, got {other:?}"),
     };
     if version != PROTOCOL_VERSION {
@@ -557,18 +583,55 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
         bail!("refusing connection to self");
     }
 
-    pair_session(
-        &app,
-        &mut reader,
-        &mut writer,
-        &local,
-        &remote_id,
-        &remote_name,
-        &remote_static,
-    )
-    .await?;
+    let local_trusts_remote = app.pairing.is_trusted(&remote_id, &remote_key);
+    let revoked = app.pairing.is_revoked(&remote_id, &remote_key);
+    match decide_trust(local_trusts_remote, remote_trusts_me, revoked) {
+        TrustDecision::Trusted => {}
+        TrustDecision::Pair => {
+            pair_session(
+                &app,
+                &mut reader,
+                &mut writer,
+                &local,
+                &remote_id,
+                &remote_name,
+                &remote_static,
+            )
+            .await?;
+        }
+        TrustDecision::PeerRemovedUs => {
+            info!("{remote_name} removed this device; removing local trust to match");
+            app.pairing.revoke(&remote_id, &remote_name, &remote_key)?;
+            let _ = writer
+                .send(&Message::Unpair {
+                    reason: "对端已解除配对".to_string(),
+                })
+                .await;
+            return Ok(false);
+        }
+        TrustDecision::WeRemovedPeer => {
+            info!("local trust for {remote_name} is gone; telling the peer and disconnecting");
+            app.pairing.revoke(&remote_id, &remote_name, &remote_key)?;
+            let _ = writer
+                .send(&Message::Unpair {
+                    reason: "本机已移除该设备".to_string(),
+                })
+                .await;
+            return Ok(false);
+        }
+        TrustDecision::Revoked => {
+            debug!("ignoring removed device {remote_name}");
+            let _ = writer
+                .send(&Message::Unpair {
+                    reason: "该设备已被本机移除，需在本机恢复后才能重新配对".to_string(),
+                })
+                .await;
+            return Ok(false);
+        }
+    }
 
     let (tx, mut rx) = mpsc::channel::<Message>(128);
+    let (close_tx, mut close_rx) = mpsc::channel::<Option<Message>>(1);
     let pending = Arc::new(Mutex::new(HashMap::<u64, mpsc::Sender<Control>>::new()));
     let cancel = CancellationToken::new();
     let conn_id = app.next_conn_id();
@@ -577,6 +640,7 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
         device_id: remote_id.clone(),
         device_name: remote_name.clone(),
         tx: tx.clone(),
+        close: close_tx,
         pending: pending.clone(),
         conn_id,
         cancel: cancel.clone(),
@@ -593,7 +657,17 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
     tokio::spawn(async move {
         loop {
             tokio::select! {
+                biased;
                 _ = writer_cancel.cancelled() => break,
+                close = close_rx.recv() => {
+                    if let Some(Some(msg)) = close {
+                        if let Err(err) = writer.send(&msg).await {
+                            debug!("final message failed: {err:#}");
+                        }
+                    }
+                    writer_cancel.cancel();
+                    break;
+                }
                 msg = rx.recv() => {
                     match msg {
                         Some(msg) => {
@@ -635,16 +709,22 @@ async fn run_connection(stream: TcpStream, initiator: bool, app: Arc<AppContext>
                     Ok(msg) => msg,
                     Err(err) => break Err(err),
                 };
-                if let Err(err) = handle_message(
+                match handle_message(
                     msg,
                     &app,
                     &remote_id,
+                    &remote_name,
+                    &remote_key,
                     &tx,
                     &pending,
                     &mut incoming,
                 ).await {
-                    warn!("message handling failed: {err:#}");
-                    break Err(err);
+                    Ok(MessageAction::Continue) => {}
+                    Ok(MessageAction::Close) => break Ok(()),
+                    Err(err) => {
+                        warn!("message handling failed: {err:#}");
+                        break Err(err);
+                    }
                 }
             }
         }
@@ -690,6 +770,10 @@ async fn pair_session(
                 }
                 Message::PairDenied { reason } => bail!("pairing denied: {reason}"),
                 Message::PairPending => info!("waiting for {remote_name} to approve"),
+                Message::Unpair { reason } => {
+                    app.pairing.note_unpaired(remote_id, remote_name, &remote_key)?;
+                    bail!("peer removed pairing: {reason}");
+                }
                 Message::Ping => writer.send(&Message::Pong).await?,
                 other => bail!("unexpected pairing message: {other:?}"),
             }
@@ -739,25 +823,42 @@ async fn pair_session(
                     }
                 }
             }
+            Message::Unpair { reason } => {
+                app.pairing.note_unpaired(remote_id, remote_name, &remote_key)?;
+                bail!("peer removed pairing: {reason}");
+            }
             Message::Ping => writer.send(&Message::Pong).await?,
             other => bail!("expected pairing request, got {other:?}"),
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageAction {
+    Continue,
+    Close,
+}
+
 async fn handle_message(
     msg: Message,
     app: &Arc<AppContext>,
     remote_id: &str,
+    remote_name: &str,
+    remote_key: &str,
     tx: &mpsc::Sender<Message>,
     pending: &Arc<Mutex<HashMap<u64, mpsc::Sender<Control>>>>,
     incoming: &mut HashMap<u64, IncomingEvent>,
-) -> Result<()> {
+) -> Result<MessageAction> {
     match msg {
         Message::Ping => {
             let _ = tx.send(Message::Pong).await;
         }
         Message::Pong => {}
+        Message::Unpair { reason } => {
+            info!("{remote_name} removed this device: {reason}");
+            app.pairing.note_unpaired(remote_id, remote_name, remote_key)?;
+            return Ok(MessageAction::Close);
+        }
         Message::PairRequest
         | Message::PairPending
         | Message::PairAccepted
@@ -780,7 +881,7 @@ async fn handle_message(
                         reason: "origin mismatch".to_string(),
                     })
                     .await;
-                return Ok(());
+                return Ok(MessageAction::Continue);
             }
             if !app.sync_enabled.load(Ordering::Relaxed) {
                 let _ = tx
@@ -789,7 +890,7 @@ async fn handle_message(
                         reason: "sync disabled".to_string(),
                     })
                     .await;
-                return Ok(());
+                return Ok(MessageAction::Continue);
             }
             if app.seen.lock().await.contains(id) || incoming.contains_key(&id) {
                 let _ = tx
@@ -798,7 +899,7 @@ async fn handle_message(
                         reason: "duplicate event".to_string(),
                     })
                     .await;
-                return Ok(());
+                return Ok(MessageAction::Continue);
             }
             let cfg = app.config.load_full();
             match validate_offer(&cfg, kind, &items, total_size) {
@@ -854,7 +955,7 @@ async fn handle_message(
                             reason: format!("{err:#}"),
                         })
                         .await;
-                    return Ok(());
+                    return Ok(MessageAction::Continue);
                 }
             };
             let (respond, response) = oneshot::channel();
@@ -906,7 +1007,7 @@ async fn handle_message(
             }
         }
     }
-    Ok(())
+    Ok(MessageAction::Continue)
 }
 
 async fn dispatch(

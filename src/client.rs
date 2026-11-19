@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     crypto::handshake,
+    pairing::{decide_trust, PairingManager, TrustDecision},
     protocol::{sha256, ClipKind, ItemMeta, Message, CHUNK_SIZE, PROTOCOL_VERSION},
 };
 use anyhow::{bail, Context, Result};
@@ -8,7 +9,12 @@ use std::{io::Read, path::Path};
 use std::time::Duration;
 use tokio::{net::TcpStream, time::timeout};
 
-pub async fn send_text(config: &Config, addr: &str, text: String) -> Result<()> {
+pub async fn send_text(
+    config: &Config,
+    pairing: &PairingManager,
+    addr: &str,
+    text: String,
+) -> Result<()> {
     let bytes = text.into_bytes();
     let hash = sha256(&bytes);
     let meta = ItemMeta {
@@ -19,10 +25,15 @@ pub async fn send_text(config: &Config, addr: &str, text: String) -> Result<()> 
         height: None,
         hash: Some(hash),
     };
-    send_event(config, addr, ClipKind::Text, vec![(meta, bytes)]).await
+    send_event(config, pairing, addr, ClipKind::Text, vec![(meta, bytes)]).await
 }
 
-pub async fn send_file(config: &Config, addr: &str, path: &Path) -> Result<()> {
+pub async fn send_file(
+    config: &Config,
+    pairing: &PairingManager,
+    addr: &str,
+    path: &Path,
+) -> Result<()> {
     let data = tokio::fs::read(path)
         .await
         .with_context(|| format!("read {}", path.display()))?;
@@ -38,10 +49,15 @@ pub async fn send_file(config: &Config, addr: &str, path: &Path) -> Result<()> {
         height: None,
         hash: Some(sha256(&data)),
     };
-    send_event(config, addr, ClipKind::Files, vec![(meta, data)]).await
+    send_event(config, pairing, addr, ClipKind::Files, vec![(meta, data)]).await
 }
 
-pub async fn send_files(config: &Config, addr: &str, paths: &[String]) -> Result<()> {
+pub async fn send_files(
+    config: &Config,
+    pairing: &PairingManager,
+    addr: &str,
+    paths: &[String],
+) -> Result<()> {
     let mut items = Vec::with_capacity(paths.len());
     for path in paths {
         let path = Path::new(path);
@@ -62,10 +78,15 @@ pub async fn send_files(config: &Config, addr: &str, paths: &[String]) -> Result
         };
         items.push((meta, data));
     }
-    send_event(config, addr, ClipKind::Files, items).await
+    send_event(config, pairing, addr, ClipKind::Files, items).await
 }
 
-pub async fn send_image(config: &Config, addr: &str, path: &Path) -> Result<()> {
+pub async fn send_image(
+    config: &Config,
+    pairing: &PairingManager,
+    addr: &str,
+    path: &Path,
+) -> Result<()> {
     let data = tokio::fs::read(path)
         .await
         .with_context(|| format!("read {}", path.display()))?;
@@ -94,11 +115,12 @@ pub async fn send_image(config: &Config, addr: &str, path: &Path) -> Result<()> 
         height,
         hash: Some(sha256(&data)),
     };
-    send_event(config, addr, ClipKind::Image, vec![(meta, data)]).await
+    send_event(config, pairing, addr, ClipKind::Image, vec![(meta, data)]).await
 }
 
 async fn send_event(
     config: &Config,
+    pairing: &PairingManager,
     addr: &str,
     kind: ClipKind,
     items: Vec<(ItemMeta, Vec<u8>)>,
@@ -107,26 +129,72 @@ async fn send_event(
     let stream = TcpStream::connect(addr)
         .await
         .with_context(|| format!("connect {addr}"))?;
-    let (mut reader, mut writer, _remote_static) =
+    let (mut reader, mut writer, remote_static) =
         handshake(stream, &private_key, true).await?;
+    let remote_key = hex::encode(&remote_static);
 
     writer
         .send(&Message::Hello {
             device_id: config.device_id.clone(),
             device_name: config.device_name.clone(),
             version: PROTOCOL_VERSION,
+            trusts_me: pairing.is_trusted_key(&remote_key),
         })
         .await?;
-    let (remote_id, remote_name) = match reader.recv().await? {
+    let (remote_id, remote_name, remote_trusts_me) = match reader.recv().await? {
         Message::Hello {
             device_id,
             device_name,
+            trusts_me,
             ..
-        } => (device_id, device_name),
+        } => (device_id, device_name, trusts_me),
         other => bail!("expected hello, got {other:?}"),
     };
     println!("connected to {remote_name}");
-    pair_client(config, &mut reader, &mut writer, &remote_id, &remote_name).await?;
+
+    let local_trusts_remote = pairing.is_trusted(&remote_id, &remote_key);
+    let revoked = pairing.is_revoked(&remote_id, &remote_key);
+    match decide_trust(local_trusts_remote, remote_trusts_me, revoked) {
+        TrustDecision::Trusted => {}
+        TrustDecision::Pair => {
+            pair_client(
+                config,
+                pairing,
+                &mut reader,
+                &mut writer,
+                &remote_id,
+                &remote_name,
+                &remote_key,
+            )
+            .await?;
+        }
+        TrustDecision::PeerRemovedUs => {
+            pairing.revoke(&remote_id, &remote_name, &remote_key)?;
+            let _ = writer
+                .send(&Message::Unpair {
+                    reason: "对端已解除配对".to_string(),
+                })
+                .await;
+            bail!("{remote_name} 已解除配对，本机信任记录已同步删除");
+        }
+        TrustDecision::WeRemovedPeer => {
+            pairing.revoke(&remote_id, &remote_name, &remote_key)?;
+            let _ = writer
+                .send(&Message::Unpair {
+                    reason: "本机已移除该设备".to_string(),
+                })
+                .await;
+            bail!("本机已移除 {remote_name}；请在设置中恢复后再发送");
+        }
+        TrustDecision::Revoked => {
+            let _ = writer
+                .send(&Message::Unpair {
+                    reason: "该设备已被本机移除".to_string(),
+                })
+                .await;
+            bail!("本机已移除 {remote_name}；请在设置中恢复后再发送");
+        }
+    }
 
     let id = crate::config::random_u64();
     let total_size: u64 = items.iter().map(|(meta, _)| meta.size).sum();
@@ -144,6 +212,10 @@ async fn send_event(
         match reader.recv().await? {
             Message::Ready { .. } => break,
             Message::Reject { reason, .. } => bail!("peer rejected: {reason}"),
+            Message::Unpair { reason } => {
+                pairing.note_unpaired(&remote_id, &remote_name, &remote_key)?;
+                bail!("对端已解除配对：{reason}");
+            }
             Message::Ping => writer.send(&Message::Pong).await?,
             Message::Pong => {}
             other => bail!("unexpected response: {other:?}"),
@@ -183,6 +255,10 @@ async fn send_event(
                 return Ok(());
             }
             Message::Ack { ok: false, reason, .. } => bail!("peer failed: {reason}"),
+            Message::Unpair { reason } => {
+                pairing.note_unpaired(&remote_id, &remote_name, &remote_key)?;
+                bail!("对端已解除配对：{reason}");
+            }
             Message::Ping => writer.send(&Message::Pong).await?,
             Message::Pong => {}
             other => bail!("unexpected ack: {other:?}"),
@@ -192,10 +268,12 @@ async fn send_event(
 
 async fn pair_client(
     config: &Config,
+    pairing: &PairingManager,
     reader: &mut crate::crypto::SecureReader,
     writer: &mut crate::crypto::SecureWriter,
     remote_id: &str,
     remote_name: &str,
+    remote_key: &str,
 ) -> Result<()> {
     if config.device_id.as_str() < remote_id {
         writer.send(&Message::PairRequest).await?;
@@ -205,11 +283,16 @@ async fn pair_client(
                 .context("pairing timed out")??;
             match msg {
                 Message::PairAccepted => {
+                    pairing.trust(remote_id, remote_name, remote_key)?;
                     println!("pairing approved by {remote_name}");
                     return Ok(());
                 }
                 Message::PairDenied { reason } => bail!("pairing denied: {reason}"),
                 Message::PairPending => println!("waiting for {remote_name} to approve"),
+                Message::Unpair { reason } => {
+                    pairing.note_unpaired(remote_id, remote_name, remote_key)?;
+                    bail!("对端已解除配对：{reason}");
+                }
                 Message::Ping => writer.send(&Message::Pong).await?,
                 other => bail!("unexpected pairing message: {other:?}"),
             }
@@ -222,9 +305,14 @@ async fn pair_client(
             .context("pairing request timed out")??;
         match msg {
             Message::PairRequest => {
+                pairing.trust(remote_id, remote_name, remote_key)?;
                 writer.send(&Message::PairAccepted).await?;
                 println!("pairing request from {remote_name} approved (CLI)");
                 return Ok(());
+            }
+            Message::Unpair { reason } => {
+                pairing.note_unpaired(remote_id, remote_name, remote_key)?;
+                bail!("对端已解除配对：{reason}");
             }
             Message::Ping => writer.send(&Message::Pong).await?,
             other => bail!("expected pairing request, got {other:?}"),

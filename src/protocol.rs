@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use bincode::{Decode, Encode};
 use sha2::{Digest, Sha256};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Maximum encrypted/plain frame payload. Noise overhead is 16 bytes.
 pub const MAX_FRAME: usize = 60_000;
 /// Clipboard/file chunk size. Keep well below MAX_FRAME.
@@ -32,6 +32,9 @@ pub enum Message {
         device_id: String,
         device_name: String,
         version: u32,
+        /// 发送方当前是否仍然信任接收方。双方都会在 Hello 里声明，
+        /// 任一方解除配对后，另一方可以立即跟进删除。
+        trusts_me: bool,
     },
     Offer {
         id: u64,
@@ -75,6 +78,10 @@ pub enum Message {
     PairPending,
     PairAccepted,
     PairDenied {
+        reason: String,
+    },
+    /// 通知对端：本机已解除配对。接收方应删除对应信任记录并断开。
+    Unpair {
         reason: String,
     },
     Ping,

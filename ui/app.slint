@@ -370,6 +370,12 @@ export struct TrustedDevice {
     fingerprint: string,
 }
 
+export struct RevokedDevice {
+    device-id: string,
+    name: string,
+    fingerprint: string,
+}
+
 export struct LocalForm {
     poll-ms: string,
     max-text-kb: string,
@@ -402,12 +408,15 @@ export component SettingsWindow inherits Window {
     in-out property <bool> status-error: false;
     in-out property <bool> status-success: false;
     in-out property <[TrustedDevice]> trusted-devices;
+    in-out property <[RevokedDevice]> revoked-devices;
     in-out property <bool> confirming-clear: false;
 
     callback save-connection(ConnectionForm);
     callback save-local(LocalForm);
     callback forget-device(string);
     callback forget-all-devices();
+    callback allow-device(string);
+    callback allow-all-devices();
     callback close-window();
 
     function clear-status() {
@@ -680,6 +689,92 @@ export component SettingsWindow inherits Window {
                                     danger: true;
                                     width: 52px;
                                     clicked => { root.forget-device(device.device-id); }
+                                }
+                            }
+                        }
+
+                        if root.revoked-devices.length > 0 : VerticalBox {
+                            padding-left: 16px;
+                            padding-right: 10px;
+                            padding-top: 8px;
+                            padding-bottom: 6px;
+                            spacing: 6px;
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                cross-axis-alignment: center;
+
+                                Text {
+                                    text: "已移除设备（不会自动重新配对）";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: Theme.secondary;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                TextButton {
+                                    text: "全部恢复";
+                                    width: 72px;
+                                    clicked => { root.allow-all-devices(); }
+                                }
+                            }
+
+                            for device in root.revoked-devices : Rectangle {
+                                height: 54px;
+                                border-radius: 9px;
+                                background: Theme.field-bg;
+
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 8px;
+                                    spacing: 10px;
+                                    cross-axis-alignment: center;
+
+                                    Rectangle {
+                                        width: 32px;
+                                        height: 32px;
+                                        border-radius: 9px;
+                                        background: Theme.dark ? #3a3a3c : #f2f2f7;
+
+                                        Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: "×";
+                                            font-size: 16px;
+                                            font-weight: 600;
+                                            color: Theme.secondary;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        alignment: center;
+
+                                        Text {
+                                            text: device.name == "" ? "未知设备" : device.name;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: "指纹 " + device.fingerprint;
+                                            font-size: 11px;
+                                            color: Theme.secondary;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    TextButton {
+                                        text: "恢复";
+                                        width: 52px;
+                                        clicked => { root.allow-device(device.device-id); }
+                                    }
                                 }
                             }
                         }
