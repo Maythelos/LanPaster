@@ -15,6 +15,8 @@ use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
+#[cfg(target_os = "macos")]
+use tray_icon::Rect;
 use tracing::{debug, info, warn};
 use winit::{
     application::ApplicationHandler,
@@ -45,6 +47,8 @@ enum UserEvent {
     History(Vec<Arc<HistoryItem>>),
     Pairing(Vec<PendingInfo>),
     Activity,
+    #[cfg(target_os = "macos")]
+    ShowMenu(Rect),
 }
 
 #[derive(Debug, Clone)]
@@ -296,6 +300,10 @@ struct AppHandler {
     app: Arc<AppContext>,
     runtime: tokio::runtime::Handle,
     menu: Option<TrayMenu>,
+    /// macOS 上菜单不再交给 NSStatusItem 自动弹出。系统会把菜单往
+    /// 下放一个菜单栏的高度；这里保留原生 NSMenu，自己定位弹出。
+    #[cfg(target_os = "macos")]
+    native_menu: Option<Menu>,
     tray: Option<TrayIcon>,
     failed: bool,
     active_until: Option<Instant>,
@@ -317,8 +325,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         }
         match build_tray(&self.app) {
-            Ok((menu, tray)) => {
+            Ok((menu, tray, _native_menu)) => {
                 self.menu = Some(menu);
+                #[cfg(target_os = "macos")]
+                {
+                    self.native_menu = _native_menu;
+                }
                 self.tray = Some(tray);
                 info!("tray icon started");
             }
@@ -425,6 +437,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
             }
             UserEvent::OpenConfig(panel) => open_config_window(panel),
+            #[cfg(target_os = "macos")]
+            UserEvent::ShowMenu(rect) => {
+                if let Some(menu) = self.native_menu.as_ref() {
+                    show_native_menu(menu, rect);
+                }
+            }
             UserEvent::Pairing(pending) => {
                 if let Some(menu) = self.menu.as_mut() {
                     menu.update_requests(&pending);
@@ -498,12 +516,22 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
     let proxy = event_loop.create_proxy();
     TrayIconEvent::set_event_handler(Some(move |event| {
         if let TrayIconEvent::Click {
-            button: MouseButton::Left,
+            button,
             button_state: MouseButtonState::Up,
+            rect: _click_rect,
             ..
         } = event
         {
-            let _ = proxy.send_event(UserEvent::OpenConfig("connection"));
+            match button {
+                MouseButton::Left => {
+                    let _ = proxy.send_event(UserEvent::OpenConfig("connection"));
+                }
+                #[cfg(target_os = "macos")]
+                MouseButton::Right => {
+                    let _ = proxy.send_event(UserEvent::ShowMenu(_click_rect));
+                }
+                _ => {}
+            }
         }
     }));
 
@@ -644,6 +672,8 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
         app,
         runtime: runtime.clone(),
         menu: None,
+        #[cfg(target_os = "macos")]
+        native_menu: None,
         tray: None,
         failed: false,
         active_until: None,
@@ -656,19 +686,65 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
     Ok(())
 }
 
-fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon)> {
+fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon, Option<Menu>)> {
     let (menu, mut menu_state) = TrayMenu::new()?;
     menu_state.update_discovered(&[], app.config.load().mdns_enabled);
     let icon = load_icon(ICON_OFF)?;
     let builder = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
         .with_tooltip(format!("LanPaster · {}", app.config.load().device_name));
+    // macOS：菜单自己持有并手动弹出，避开系统给状态栏菜单加的一个
+    // 菜单栏高度的间隙。Windows / Linux 继续用 tray-icon 的原生菜单。
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_menu(Box::new(menu));
     #[cfg(target_os = "macos")]
     let builder = builder.with_icon_templated(icon);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.with_icon(icon);
     let tray = builder.build()?;
-    Ok((menu_state, tray))
+    #[cfg(target_os = "macos")]
+    let native_menu = Some(menu);
+    #[cfg(not(target_os = "macos"))]
+    let native_menu = None;
+    Ok((menu_state, tray, native_menu))
+}
+
+/// 在 macOS 上手动弹出原生 NSMenu。菜单的键盘导航、子菜单、
+/// 可访问性都还是 AppKit 提供的，只是位置改由我们指定。
+#[cfg(target_os = "macos")]
+fn show_native_menu(menu: &Menu, rect: Rect) {
+    use objc2_app_kit::{NSMenu, NSScreen, NSEvent};
+    use objc2_foundation::NSPoint;
+    use tray_icon::menu::ContextMenu;
+
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let Some(ns_menu) = (unsafe { (menu.ns_menu() as *const NSMenu).as_ref() }) else {
+        return;
+    };
+    let mouse = NSEvent::mouseLocation();
+    let screens = NSScreen::screens(mtm);
+    let Some(screen) = screens.iter().find(|screen| {
+        let frame = screen.frame();
+        mouse.x >= frame.origin.x
+            && mouse.x <= frame.origin.x + frame.size.width
+            && mouse.y >= frame.origin.y
+            && mouse.y <= frame.origin.y + frame.size.height
+    }) else {
+        return;
+    };
+    let visible = screen.visibleFrame();
+    let scale = screen.backingScaleFactor();
+    // rect 是物理像素；用点击所在屏幕的缩放换算成逻辑坐标。
+    // 菜单左上角放在状态栏图标左边，并给菜单阴影留 6pt，
+    // 避免第一项被菜单栏裁掉后出现滚动箭头。
+    let left = if rect.size.width > 0 {
+        rect.position.x / scale
+    } else {
+        mouse.x - 20.0
+    };
+    let location = NSPoint::new(left, visible.origin.y + visible.size.height - 6.0);
+    ns_menu.popUpMenuPositioningItem_atLocation_inView(None, location, None);
 }
 
 fn update_tray_status(
