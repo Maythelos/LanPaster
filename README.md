@@ -162,26 +162,6 @@ App 使用 ad-hoc 签名，没有 Apple 开发者签名 / 公证。自己本机�
 xattr -dr com.apple.quarantine /Applications/LanPaster.app
 ```
 
-## 测试 / 手动推送
-
-这些命令用于调试，也可以当作“手动推送剪贴板”的临时替代：
-
-```bash
-# 向某台设备发送文本
-./target/release/lanpaster send 192.168.1.20:39393 "hello"
-
-# 发送单个文件
-./target/release/lanpaster send-file 192.168.1.20:39393 ./a.pdf
-
-# 发送多个文件
-./target/release/lanpaster send-files 192.168.1.20:39393 ./a.pdf ./b.png
-
-# 发送图片（保留文件内编码格式）
-./target/release/lanpaster send-image 192.168.1.20:39393 ./photo.jpg
-```
-
-发送命令使用当前配置里的设备身份；如果对方尚未信任，需要对方在托盘确认。
-
 ## 配置项
 
 | 键 | 默认 | 说明 |
@@ -257,7 +237,6 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 - `src/cache.rs`：接收文件缓存清理
 - `ui/app.slint`：配置窗口布局
 - `assets/tray-*.png`：托盘图标
-- `src/client.rs`：`send` / `send-file` / `send-files` / `send-image` 调试客户端
 - `scripts/package-macos.sh`：macOS Universal App / DMG / ZIP 打包
 - `assets/AppIcon.icns`：App 图标
 

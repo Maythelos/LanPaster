@@ -397,9 +397,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     let enabled = !self.app.sync_enabled.load(Ordering::Relaxed);
                     self.app.sync_enabled.store(enabled, Ordering::Relaxed);
                     menu.sync.set_checked(enabled);
-                    if enabled {
-                        let _ = self.app.clipboard_cmd.send(ClipboardCommand::Push);
-                    }
                     update_tray_status(
                         menu,
                         self.tray.as_ref(),

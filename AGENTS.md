@@ -18,7 +18,6 @@ LanPaster 是 Rust 写的局域网剪贴板同步工具（文本 / 图片 / 文�
 - 同机联调两个实例：用不同配置和不同端口，例如
   `LANPASTER_CONFIG=/tmp/lp-a.toml ./target/release/lanpaster run --headless`。
   单实例锁按配置文件路径计算，同配置的第二个 `run` 会直接退出。
-- 手动推送调试：`send <host:port> [text]`、`send-file`、`send-files`、`send-image`。
 
 ## OpenIDEA MCP（仅当工具可用）
 

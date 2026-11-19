@@ -64,8 +64,6 @@ pub enum ClipboardCommand {
         record: bool,
         respond: oneshot::Sender<Result<()>>,
     },
-    /// Re-read the local clipboard and emit it as a local event.
-    Push,
     /// The platform clipboard watcher reported a change.
     Changed,
 }
@@ -144,7 +142,6 @@ fn run(
             if !apply_command(
                 &ctx,
                 &cfg,
-                &events,
                 &history,
                 &mut last_fp,
                 &mut suppress_next,
@@ -191,7 +188,6 @@ fn run(
                 if !apply_command(
                     &ctx,
                     &cfg,
-                    &events,
                     &history,
                     &mut last_fp,
                     &mut suppress_next,
@@ -238,7 +234,6 @@ fn emit_local(
 fn apply_command(
     ctx: &ClipboardContext,
     config: &Config,
-    events: &tokio_mpsc::UnboundedSender<LocalClipboard>,
     history: &History,
     last_fp: &mut Option<Vec<u8>>,
     suppress_next: &mut bool,
@@ -276,19 +271,6 @@ fn apply_command(
             true
         }
         ClipboardCommand::Changed => true,
-        ClipboardCommand::Push => {
-            if let Some(local) = read_local(ctx, config, last_image_mime.as_deref()) {
-                if let LocalClipboard::Image { mime, .. } = &local {
-                    *last_image_mime = Some(mime.clone());
-                }
-                *last_fp = Some(fingerprint_local(&local));
-                *suppress_next = false;
-                if events.send(local).is_err() {
-                    return false;
-                }
-            }
-            true
-        }
     }
 }
 

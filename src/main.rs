@@ -1,7 +1,6 @@
 mod autostart;
 mod cache;
 mod clipboard;
-mod client;
 mod config;
 mod crypto;
 mod history;
@@ -38,10 +37,6 @@ fn main() -> Result<()> {
         "ui" => run_config_ui(&args),
         "beep" => { sound::test_beep(); Ok(()) }
         "autostart" => autostart_cmd(&args),
-        "send" => send(&args),
-        "send-file" => send_file(&args),
-        "send-files" => send_files(&args),
-        "send-image" => send_image(&args),
         "init" => init(),
         "config" | "print-config" => print_config(),
         "version" | "--version" | "-V" => {
@@ -54,69 +49,6 @@ fn main() -> Result<()> {
         }
         other => anyhow::bail!("unknown command {other:?}; try `lanpaster help`"),
     }
-}
-
-fn send(args: &[String]) -> Result<()> {
-    let addr = args
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: lanpaster send <host:port> [text]"))?
-        .clone();
-    let text = if args.len() > 2 {
-        args[2..].join(" ")
-    } else {
-        client::read_stdin()?
-    };
-    let (cfg, path) = load_config()?;
-    cfg.validate()?;
-    init_logging(&cfg.log_level);
-    let pairing = pairing::PairingManager::new(path.with_extension("trusted.toml"))?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_text(&cfg, &pairing, &addr, text))
-}
-
-fn send_file(args: &[String]) -> Result<()> {
-    let addr = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-file <host:port> <path>"))?;
-    let file = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-file <host:port> <path>"))?;
-    let (cfg, config_path) = load_config()?;
-    cfg.validate()?;
-    init_logging(&cfg.log_level);
-    let pairing = pairing::PairingManager::new(config_path.with_extension("trusted.toml"))?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_file(
-        &cfg,
-        &pairing,
-        addr,
-        std::path::Path::new(file),
-    ))
-}
-
-fn send_files(args: &[String]) -> Result<()> {
-    let addr = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-files <host:port> <path>..."))?;
-    if args.len() < 3 {
-        anyhow::bail!("usage: lanpaster send-files <host:port> <path>...");
-    }
-    let (cfg, path) = load_config()?;
-    cfg.validate()?;
-    init_logging(&cfg.log_level);
-    let pairing = pairing::PairingManager::new(path.with_extension("trusted.toml"))?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_files(&cfg, &pairing, addr, &args[2..]))
-}
-
-fn send_image(args: &[String]) -> Result<()> {
-    let addr = args.get(1).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-image <host:port> <path>"))?;
-    let file = args.get(2).ok_or_else(|| anyhow::anyhow!("usage: lanpaster send-image <host:port> <path>"))?;
-    let (cfg, config_path) = load_config()?;
-    cfg.validate()?;
-    init_logging(&cfg.log_level);
-    let pairing = pairing::PairingManager::new(config_path.with_extension("trusted.toml"))?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(client::send_image(
-        &cfg,
-        &pairing,
-        addr,
-        std::path::Path::new(file),
-    ))
 }
 
 fn autostart_cmd(args: &[String]) -> Result<()> {
@@ -154,7 +86,7 @@ fn run_config_ui(args: &[String]) -> Result<()> {
 
 fn print_help() {
     println!(
-        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui [connection|local]\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster config\n    lanpaster send <host:port> [text]\n    lanpaster send-file <host:port> <path>\n    lanpaster send-files <host:port> <path>...\n    lanpaster send-image <host:port> <path>\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
+        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui [connection|local]\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster config\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
         env!("CARGO_PKG_VERSION")
     );
 }
