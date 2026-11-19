@@ -15,7 +15,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     fs::File,
@@ -153,6 +153,18 @@ impl Default for SeenEvents {
     }
 }
 
+/// A device found through mDNS. Discovery only fills this list; the user has
+/// to explicitly ask for a connection from the tray menu.
+#[derive(Debug, Clone)]
+pub struct DiscoveredPeer {
+    pub device_id: String,
+    pub device_name: String,
+    pub addr: String,
+    pub protocol: u32,
+    pub fullname: String,
+    pub seen_at: Instant,
+}
+
 pub struct AppContext {
     pub config: Arc<ArcSwap<Config>>,
     pub pairing: Arc<PairingManager>,
@@ -162,6 +174,10 @@ pub struct AppContext {
     pub dialed: Arc<Mutex<HashSet<String>>>,
     pub sync_enabled: Arc<AtomicBool>,
     pub activity_seq: Arc<AtomicU64>,
+    /// Devices discovered by mDNS, keyed by device id.
+    discovered: std::sync::Mutex<HashMap<String, DiscoveredPeer>>,
+    /// Wakes up the mDNS thread for a manual rescan.
+    scan_tx: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
     conn_seq: AtomicU64,
 }
 
@@ -180,6 +196,8 @@ impl AppContext {
             dialed: Arc::new(Mutex::new(HashSet::new())),
             sync_enabled: Arc::new(AtomicBool::new(true)),
             activity_seq: Arc::new(AtomicU64::new(0)),
+            discovered: std::sync::Mutex::new(HashMap::new()),
+            scan_tx: std::sync::Mutex::new(None),
             conn_seq: AtomicU64::new(1),
         })
     }
@@ -217,6 +235,98 @@ impl AppContext {
         }
         self.config.store(Arc::new(new));
         restart
+    }
+
+    pub fn set_scan_control(&self, tx: std::sync::mpsc::Sender<()>) {
+        *self.scan_tx.lock().unwrap() = Some(tx);
+    }
+
+    /// Ask the mDNS thread to send a fresh query. Discovery results are only
+    /// stored; nothing is dialed automatically.
+    pub fn request_scan(&self) {
+        let tx = self.scan_tx.lock().unwrap().clone();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+
+    pub fn add_discovered(&self, peer: DiscoveredPeer) {
+        let mut discovered = self.discovered.lock().unwrap();
+        let now = Instant::now();
+        discovered.retain(|_, p| now.duration_since(p.seen_at) < Duration::from_secs(900));
+        discovered.insert(peer.device_id.clone(), peer);
+    }
+
+    pub fn remove_discovered(&self, fullname: &str) {
+        self.discovered
+            .lock()
+            .unwrap()
+            .retain(|_, p| p.fullname != fullname);
+    }
+
+    pub fn clear_discovered(&self) {
+        self.discovered.lock().unwrap().clear();
+    }
+
+    pub fn discovered_list(&self) -> Vec<DiscoveredPeer> {
+        let mut discovered = self.discovered.lock().unwrap();
+        let now = Instant::now();
+        discovered.retain(|_, p| now.duration_since(p.seen_at) < Duration::from_secs(900));
+        let mut list: Vec<_> = discovered.values().cloned().collect();
+        list.sort_by(|a, b| {
+            a.device_name
+                .to_lowercase()
+                .cmp(&b.device_name.to_lowercase())
+        });
+        list
+    }
+
+    /// One-shot connection attempt triggered by the user. If the session ends
+    /// normally, keep reconnecting like a configured peer; if the attempt is
+    /// rejected, let the user click again instead of looping forever.
+    pub async fn connect_discovered(self: &Arc<Self>, device_id: &str) {
+        let peer = self
+            .discovered
+            .lock()
+            .unwrap()
+            .get(device_id)
+            .cloned();
+        let Some(peer) = peer else {
+            info!("discovered device {device_id} is no longer available");
+            return;
+        };
+        {
+            let mut dialed = self.dialed.lock().await;
+            if !dialed.insert(peer.addr.clone()) {
+                info!("already connecting to {}", peer.addr);
+                return;
+            }
+        }
+        let app = self.clone();
+        let addr = peer.addr.clone();
+        let name = peer.device_name.clone();
+        tokio::spawn(async move {
+            match TcpStream::connect(&addr).await {
+                Ok(stream) => {
+                    let _ = stream.set_nodelay(true);
+                    info!("manual connection to {name} at {addr}");
+                    match run_connection(stream, true, app.clone()).await {
+                        Ok(true) => dial_loop(addr, app).await,
+                        Ok(false) => {
+                            app.dialed.lock().await.remove(&addr);
+                        }
+                        Err(err) => {
+                            info!("manual connection to {name} ended: {err:#}");
+                            app.dialed.lock().await.remove(&addr);
+                        }
+                    }
+                }
+                Err(err) => {
+                    info!("manual connection to {name} at {addr} failed: {err}");
+                    app.dialed.lock().await.remove(&addr);
+                }
+            }
+        });
     }
 
     pub async fn ensure_dial(self: &Arc<Self>, addr: String) {
@@ -1334,5 +1444,35 @@ mod tests {
         assert_eq!(sanitize_name("a.txt", &mut used), "a.txt");
         assert_eq!(sanitize_name("a.txt", &mut used), "a-1.txt");
         assert_eq!(sanitize_name("", &mut used), "file");
+    }
+
+    #[test]
+    fn discovered_peers_are_deduped_and_removable() {
+        let (clip_tx, _clip_rx) = std::sync::mpsc::channel();
+        let config = Arc::new(ArcSwap::from_pointee(Config::default()));
+        let pairing_path = std::env::temp_dir().join(format!(
+            "lanpaster-pairing-test-{}.toml",
+            crate::config::random_hex(4)
+        ));
+        let pairing = Arc::new(PairingManager::new(&pairing_path).unwrap());
+        let app = AppContext::new(config, clip_tx, pairing).unwrap();
+
+        let peer = |name: &str, addr: &str| DiscoveredPeer {
+            device_id: "dev1".to_string(),
+            device_name: name.to_string(),
+            addr: addr.to_string(),
+            protocol: 2,
+            fullname: "dev1._lanpaster._tcp.local.".to_string(),
+            seen_at: Instant::now(),
+        };
+        app.add_discovered(peer("old", "192.168.1.2:39393"));
+        app.add_discovered(peer("new", "192.168.1.3:39393"));
+        let list = app.discovered_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].device_name, "new");
+
+        app.remove_discovered("dev1._lanpaster._tcp.local.");
+        assert!(app.discovered_list().is_empty());
+        let _ = std::fs::remove_file(pairing_path);
     }
 }

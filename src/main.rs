@@ -300,7 +300,7 @@ async fn start_services(cfg: Config, config_path: PathBuf) -> Result<Arc<AppCont
     }
 
     if cfg.mdns_enabled {
-        mdns::spawn(cfg.clone(), app.clone(), tokio::runtime::Handle::current());
+        mdns::spawn(cfg.clone(), app.clone());
     }
 
     // Watch the config file written by the on-demand config window and

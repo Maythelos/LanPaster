@@ -2,10 +2,11 @@ use crate::{
     clipboard::ClipboardCommand,
     net::AppContext,
     pairing::PendingInfo,
+    protocol::PROTOCOL_VERSION,
 };
 use anyhow::{Context, Result};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{atomic::Ordering, Arc},
 };
 use std::time::{Duration, Instant};
@@ -39,13 +40,27 @@ enum UserEvent {
     Menu(MenuId),
     OpenConfig(&'static str),
     Peers(Vec<(String, String)>),
+    Discovered(Vec<DiscoveredEntry>),
     Pairing(Vec<PendingInfo>),
     Activity,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredEntry {
+    device_id: String,
+    name: String,
+    addr: String,
+    protocol: u32,
+    online: bool,
 }
 
 struct TrayMenu {
     sync: CheckMenuItem,
     autostart: CheckMenuItem,
+    scan: MenuItem,
+    discovered: Submenu,
+    discovered_items: Vec<MenuItem>,
+    discovered_actions: HashMap<String, String>,
     requests: Submenu,
     request_items: Vec<MenuItem>,
     request_actions: HashMap<String, (String, bool)>,
@@ -71,6 +86,14 @@ impl TrayMenu {
         );
         menu.append(&sync)?;
         menu.append(&autostart)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        let scan = MenuItem::new("扫描局域网设备", true, None);
+        menu.append(&scan)?;
+        let discovered = Submenu::new("发现的设备 (0)", true);
+        let discovered_placeholder = MenuItem::new("未发现设备", false, None);
+        discovered.append(&discovered_placeholder)?;
+        menu.append(&discovered)?;
         menu.append(&PredefinedMenuItem::separator())?;
 
         let requests = Submenu::new("连接请求 (0)", true);
@@ -104,6 +127,10 @@ impl TrayMenu {
             Self {
                 sync,
                 autostart,
+                scan,
+                discovered,
+                discovered_items: vec![discovered_placeholder],
+                discovered_actions: HashMap::new(),
                 requests,
                 request_items: vec![request_placeholder],
                 request_actions: HashMap::new(),
@@ -169,10 +196,63 @@ impl TrayMenu {
         self.online_count = peers.len();
         self.devices.set_text(format!("在线设备 ({})", peers.len()));
     }
+
+    fn update_discovered(&mut self, peers: &[DiscoveredEntry], mdns_enabled: bool) {
+        self.scan.set_enabled(mdns_enabled);
+        self.scan.set_text(if mdns_enabled {
+            "扫描局域网设备"
+        } else {
+            "扫描局域网设备（mDNS 已关闭）"
+        });
+        for item in self.discovered_items.drain(..) {
+            let _ = self.discovered.remove(&item);
+        }
+        self.discovered_actions.clear();
+        if peers.is_empty() {
+            let text = if mdns_enabled {
+                "未发现设备，点击上方扫描"
+            } else {
+                "mDNS 已在设置中关闭"
+            };
+            let item = MenuItem::new(text, false, None);
+            let _ = self.discovered.append(&item);
+            self.discovered_items.push(item);
+        } else {
+            for peer in peers {
+                let compatible = peer.protocol == PROTOCOL_VERSION;
+                let label = if peer.online {
+                    format!("已连接：{}", peer.name)
+                } else if !compatible {
+                    let version = if peer.protocol == 0 {
+                        "未知".to_string()
+                    } else {
+                        format!("v{}", peer.protocol)
+                    };
+                    format!(
+                        "{}（{}，版本 {version} 不兼容）",
+                        peer.name, peer.addr
+                    )
+                } else {
+                    format!("连接：{}（{}）", peer.name, peer.addr)
+                };
+                let enabled = !peer.online && compatible;
+                let item = MenuItem::new(label, enabled, None);
+                if enabled {
+                    self.discovered_actions
+                        .insert(item.id().as_ref().to_string(), peer.device_id.clone());
+                }
+                let _ = self.discovered.append(&item);
+                self.discovered_items.push(item);
+            }
+        }
+        self.discovered
+            .set_text(format!("发现的设备 ({})", peers.len()));
+    }
 }
 
 struct AppHandler {
     app: Arc<AppContext>,
+    runtime: tokio::runtime::Handle,
     menu: Option<TrayMenu>,
     tray: Option<TrayIcon>,
     failed: bool,
@@ -215,6 +295,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let Some(menu) = self.menu.as_mut() else {
                     return;
                 };
+                if id == *menu.scan.id() {
+                    self.app.request_scan();
+                    return;
+                }
+                if let Some(device_id) = menu.discovered_actions.get(id.as_ref()).cloned() {
+                    let app = self.app.clone();
+                    self.runtime.spawn(async move {
+                        app.connect_discovered(&device_id).await;
+                    });
+                    return;
+                }
                 if let Some((key, approve)) = menu.request_actions.get(id.as_ref()).cloned() {
                     if approve {
                         let _ = self.app.pairing.approve(&key);
@@ -278,6 +369,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         &self.app,
                         self.active_until.is_some(),
                     );
+                }
+            }
+            UserEvent::Discovered(peers) => {
+                debug!("tray discovery update: {} device(s)", peers.len());
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.update_discovered(&peers, self.app.config.load().mdns_enabled);
                 }
             }
             UserEvent::Activity => {
@@ -362,6 +459,53 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
         }
     });
 
+    // mDNS discovery list refresh. The list itself lives in AppContext; this
+    // task only mirrors it into the tray menu.
+    let proxy = event_loop.create_proxy();
+    let discovery_app = app.clone();
+    runtime.spawn(async move {
+        let mut last_key = String::new();
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let discovered = discovery_app.discovered_list();
+            let online: HashSet<String> = discovery_app
+                .peers
+                .snapshot()
+                .await
+                .into_iter()
+                .map(|p| p.device_id.clone())
+                .collect();
+            let entries: Vec<DiscoveredEntry> = discovered
+                .into_iter()
+                .map(|peer| {
+                    let online = online.contains(&peer.device_id);
+                    DiscoveredEntry {
+                        device_id: peer.device_id,
+                        name: peer.device_name,
+                        addr: peer.addr,
+                        protocol: peer.protocol,
+                        online,
+                    }
+                })
+                .collect();
+            let key = entries
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                        p.device_id, p.name, p.addr, p.protocol, p.online
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\u{1e}");
+            if key == last_key {
+                continue;
+            }
+            last_key = key;
+            let _ = proxy.send_event(UserEvent::Discovered(entries));
+        }
+    });
+
     let proxy = event_loop.create_proxy();
     let activity = app.activity_seq.clone();
     runtime.spawn(async move {
@@ -398,6 +542,7 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
 
     let mut handler = AppHandler {
         app,
+        runtime: runtime.clone(),
         menu: None,
         tray: None,
         failed: false,
@@ -412,7 +557,8 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
 }
 
 fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon)> {
-    let (menu, menu_state) = TrayMenu::new()?;
+    let (menu, mut menu_state) = TrayMenu::new()?;
+    menu_state.update_discovered(&[], app.config.load().mdns_enabled);
     let icon = load_icon(ICON_OFF)?;
     let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))

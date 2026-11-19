@@ -17,13 +17,13 @@
 - 连接与安全：
   - TCP P2P，Noise `XX` 握手（`snow`），持久 X25519 设备身份
   - 首次连接由一方发起请求，另一方在托盘“连接请求”里点击“同意”或“拒绝”
-  - 批准后写入本地 `trusted.toml`，后续自动连接，不再重复确认
+  - 批准后写入本地 `trusted.toml`，后续连接不再重复确认（mDNS 发现不会自动拨号）
   - 每次连接双方在 Hello 中声明是否仍信任对方；任一方移除后，另一方立即同步删除并断开
   - 被移除设备记入 `revoked` 列表，不会自动重新配对，需在设置里恢复
   - 每连接心跳、断线重连
   - 双向拨号去重（按设备 ID 选 canonical 连接），避免连接风暴
-  - mDNS 主动扫描（`mdns-sd`），TXT 只放设备 ID / 名称 / 协议版本
-  - 手动 `peers = ["host:port"]` 兜底
+  - mDNS 发现（`mdns-sd`），TXT 只放设备 ID / 名称 / 协议版本；只发现不自动连接，托盘里手动扫描并点击连接
+  - 手动 `peers = ["host:port"]` 兜底（配置项仍会自动拨号）
 - 本地配置：`~/Library/Application Support/LanPaster/config.toml`（macOS）、`~/.config/LanPaster/config.toml`（Linux）、`%APPDATA%\LanPaster\config.toml`（Windows）
 - 首次运行生成设备 ID、持久 X25519 身份密钥；配置和信任文件权限 0600
 - 循环抑制：本地事件指纹 + 远端写入后的下一次轮询抑制 + 事件 ID 去重
@@ -101,9 +101,9 @@ fingerprint: A1B2C3D4E5F60708
 首次连接流程：
 
 1. 两台设备都启动 LanPaster，保持同一局域网；
-2. 自动扫描到对方后发起连接；
+2. 托盘菜单点击「扫描局域网设备」，在「发现的设备」里点击目标设备发起连接；
 3. 接收方托盘菜单出现“连接请求”，展开后点击“同意”；
-4. 批准后保存到 `config.trusted.toml`（与配置文件同目录），后续自动连接；
+4. 批准后保存到 `config.trusted.toml`（与配置文件同目录），之后从「发现的设备」连接时不再重复确认；
 5. 如果对端重装或身份密钥变化，会重新请求确认。
 
 提示音测试与开机自启：
@@ -117,7 +117,7 @@ fingerprint: A1B2C3D4E5F60708
 
 开机自启使用默认配置路径；如果使用 `LANPASTER_CONFIG` 自定义配置，建议手动调整启动项或在默认路径放配置。
 
-默认开启 mDNS 自动发现。也可以在配置里关闭 mDNS，使用手动直连：
+默认开启 mDNS 发现，但**不会自动建立连接**：托盘菜单「扫描局域网设备」刷新局域网列表，「发现的设备」里点击设备才会发起连接；协议版本不一致的设备会标注「版本不兼容」。也可以在配置里关闭 mDNS，使用手动直连：
 
 ```toml
 mdns_enabled = false
@@ -249,7 +249,7 @@ xattr -dr com.apple.quarantine /Applications/LanPaster.app
 在 macOS arm64 上实测通过：
 
 - 文本、JPEG 图片、单文件、多文件同步
-- 两个守护进程通过 mDNS 自动发现并稳定连接
+- mDNS 能发现局域网设备；手动连接后稳定传输（发现本身不再自动拨号）
 - 两个守护进程通过手动 `peers` 直连
 - 超过 `max_file_mb` 的文件被拒绝，客户端收到 Reject
 - 首次连接请求、托盘同意后写入 trusted.toml，后续自动连接

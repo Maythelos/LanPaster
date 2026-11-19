@@ -548,8 +548,8 @@ export component SettingsWindow inherits Window {
                         }
                         Separator {}
                         ToggleRow {
-                            label: "mDNS 自动发现";
-                            hint: "在局域网内自动发现其他设备";
+                            label: "mDNS 发现";
+                            hint: "在局域网内发现设备；连接需在托盘菜单中手动发起";
                             checked <=> root.mdns-enabled;
                         }
                     }
