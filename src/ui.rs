@@ -18,9 +18,33 @@ impl Panel {
             _ => None,
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Connection => "connection",
+            Self::Local => "local",
+        }
+    }
+
+    fn index(self) -> i32 {
+        match self {
+            Self::Connection => 0,
+            Self::Local => 1,
+        }
+    }
 }
 
 pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> Result<()> {
+    // 设置窗口是独立进程。没有这把锁时，每次点托盘图标都会再拉起一个
+    // 窗口；拿不到锁就说明已有窗口，让它自己切面板并置前，然后退出。
+    let Some(_ui_lock) = instance::acquire_ui(&config_path)? else {
+        instance::request_ui(&config_path, panel.as_str())?;
+        return Ok(());
+    };
+    // 锁拿到之后再记请求文件的基线，避免启动瞬间漏掉一次托盘点击。
+    let request_path = instance::ui_request_path(&config_path);
+    let last_request = std::fs::read_to_string(&request_path).ok();
+
     #[cfg(target_os = "macos")]
     make_regular_app();
 
@@ -41,10 +65,7 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
     let pairing = Rc::new(PairingManager::new(&trusted_path)?);
     refresh_devices(&window, &pairing);
     fill_form(&window, &config);
-    window.set_panel(match panel {
-        Panel::Connection => 0,
-        Panel::Local => 1,
-    });
+    window.set_panel(panel.index());
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
     window.set_status("".into());
     window.set_status_error(false);
@@ -227,8 +248,43 @@ pub fn run_config_window(config: Config, config_path: PathBuf, panel: Panel) -> 
         timer
     };
 
+    // 托盘点击已经开着的窗口时不再新建进程，而是往请求文件里写面板名；
+    // 这里轮询该文件，把窗口重新显示并置前。
+    let request_timer = {
+        let window_weak = window.as_weak();
+        let path = request_path;
+        let mut last = last_request;
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(300),
+            move || {
+                let Ok(request) = std::fs::read_to_string(&path) else {
+                    return;
+                };
+                if last.as_deref() == Some(request.as_str()) {
+                    return;
+                }
+                let panel = request
+                    .split_whitespace()
+                    .next()
+                    .and_then(Panel::parse);
+                last = Some(request);
+                let Some(window) = window_weak.upgrade() else {
+                    return;
+                };
+                if let Some(panel) = panel {
+                    window.set_panel(panel.index());
+                }
+                show_and_focus(&window);
+            },
+        );
+        timer
+    };
+
     window.show().context("show settings window")?;
     slint::run_event_loop().context("slint event loop")?;
+    drop(request_timer);
     drop(daemon_timer);
     drop(device_timer);
     Ok(())
@@ -367,6 +423,21 @@ fn make_regular_app() {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     app.activate();
+}
+
+fn show_and_focus(window: &SettingsWindow) {
+    window.window().set_minimized(false);
+    let _ = window.show();
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            app.unhide(None);
+            app.activate();
+        }
+    }
 }
 
 fn parse_u64(value: &str, name: &str) -> Result<u64> {

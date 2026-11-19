@@ -73,8 +73,9 @@ Ubuntu 22.04 (glibc 2.35+).
 - **Native tray experience** — sync on/off, discovered/online devices,
   connection requests, clipboard history, settings, autostart, test sound, and
   quit. macOS uses a template menu-bar icon and no Dock icon.
-- **Small settings center** — a single Slint window with connection and local
-  preferences; it is a separate process and exits when closed.
+- **Small settings center** — one Slint window with connection and local
+  preferences. It runs as a separate process, exits when closed, and is reused
+  when the tray icon is clicked again.
 - **Useful defaults** — size/count limits, file cache cleanup, in-memory history,
   single-instance locking, and hot reload for most settings.
 

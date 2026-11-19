@@ -162,7 +162,7 @@ fn run(args: &[String]) -> Result<()> {
         info!("headless mode; press Ctrl-C to quit");
         runtime.block_on(async { tokio::signal::ctrl_c().await })?;
     } else {
-        match tray::run_tray(app.clone(), runtime.handle().clone()) {
+        match tray::run_tray(app.clone(), runtime.handle().clone(), path.clone()) {
             Ok(()) => {}
             Err(err) => {
                 error!("tray UI failed: {err:#}; falling back to headless mode");

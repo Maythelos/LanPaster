@@ -1,6 +1,7 @@
 use crate::{
     clipboard::ClipboardCommand,
     history::HistoryItem,
+    instance,
     net::AppContext,
     pairing::PendingInfo,
     protocol::PROTOCOL_VERSION,
@@ -8,6 +9,7 @@ use crate::{
 use anyhow::{Context, Result};
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     sync::{atomic::Ordering, Arc},
 };
 use std::time::{Duration, Instant};
@@ -299,6 +301,7 @@ impl TrayMenu {
 struct AppHandler {
     app: Arc<AppContext>,
     runtime: tokio::runtime::Handle,
+    config_path: PathBuf,
     menu: Option<TrayMenu>,
     /// macOS 上菜单不再交给 NSStatusItem 自动弹出。系统会把菜单往
     /// 下放一个菜单栏的高度；这里保留原生 NSMenu，自己定位弹出。
@@ -426,9 +429,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         }
                     }
                 } else if id == *menu.connection.id() {
-                    open_config_window("connection");
+                    open_config_window(&self.config_path, "connection");
                 } else if id == *menu.local.id() {
-                    open_config_window("local");
+                    open_config_window(&self.config_path, "local");
                 } else if id == *menu.test_sound.id() {
                     crate::sound::play();
                 } else if id == *menu.quit.id() {
@@ -436,7 +439,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     event_loop.exit();
                 }
             }
-            UserEvent::OpenConfig(panel) => open_config_window(panel),
+            UserEvent::OpenConfig(panel) => open_config_window(&self.config_path, panel),
             #[cfg(target_os = "macos")]
             UserEvent::ShowMenu(rect) => {
                 if let Some(menu) = self.native_menu.as_ref() {
@@ -499,7 +502,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 }
 
-pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result<()> {
+pub fn run_tray(
+    app: Arc<AppContext>,
+    runtime: tokio::runtime::Handle,
+    config_path: PathBuf,
+) -> Result<()> {
     let mut builder = EventLoop::<UserEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     {
@@ -671,6 +678,7 @@ pub fn run_tray(app: Arc<AppContext>, runtime: tokio::runtime::Handle) -> Result
     let mut handler = AppHandler {
         app,
         runtime: runtime.clone(),
+        config_path,
         menu: None,
         #[cfg(target_os = "macos")]
         native_menu: None,
@@ -790,7 +798,15 @@ fn load_icon(bytes: &[u8]) -> Result<Icon> {
     Icon::from_rgba(image.into_raw(), width, height).context("create tray icon")
 }
 
-fn open_config_window(panel: &str) {
+fn open_config_window(config_path: &Path, panel: &str) {
+    // 窗口是独立进程：已经开着就只请求它置前/切面板，避免每次点击都再
+    // 启动一个 lanpaster ui 进程、多出一个窗口。
+    if instance::ui_running(config_path) {
+        if let Err(err) = instance::request_ui(config_path, panel) {
+            warn!("failed to focus settings window: {err:#}");
+        }
+        return;
+    }
     match std::env::current_exe() {
         Ok(exe) => {
             if let Err(err) = std::process::Command::new(exe)
