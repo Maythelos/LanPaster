@@ -18,8 +18,10 @@ mkdir -p "$DIST" "$PKG/DEBIAN" "$PKG/usr/bin" \
 
 cp "$BIN" "$PKG/usr/bin/lanpaster"
 chmod 755 "$PKG/usr/bin/lanpaster"
-cp "$ROOT/assets/AppIcon-1024.png" "$PKG/usr/share/icons/hicolor/512x512/apps/lanpaster.png"
-cp "$ROOT/assets/AppIcon-1024.png" "$PKG/usr/share/pixmaps/lanpaster.png"
+# 512 版本已按图标主题尺寸生成，避免把 1024 源图塞进 512 目录。
+cp "$ROOT/assets/AppIcon-512.png" "$PKG/usr/share/icons/hicolor/512x512/apps/lanpaster.png"
+# pixmaps 作为兼容回退，用符号链接指向同一份文件，不再重复占包体。
+ln -s ../icons/hicolor/512x512/apps/lanpaster.png "$PKG/usr/share/pixmaps/lanpaster.png"
 
 cat > "$PKG/usr/share/applications/lanpaster.desktop" <<'DESKTOP'
 [Desktop Entry]
