@@ -64,6 +64,7 @@ component Separator inherits Rectangle {
 
 component Section inherits VerticalLayout {
     in property <string> title;
+    width: 100%;
     spacing: 8px;
     vertical-stretch: 0;
     horizontal-stretch: 1;
@@ -193,7 +194,6 @@ component SettingRow inherits HorizontalLayout {
 
     HorizontalLayout {
         width: root.field-width;
-        alignment: end;
         spacing: 8px;
         @children
     }
@@ -586,6 +586,7 @@ export component SettingsWindow inherits Window {
             background: Theme.window-bg;
 
             VerticalLayout {
+                width: 100%;
                 padding-left: Theme.page-padding;
                 padding-right: Theme.page-padding;
                 padding-top: 20px;
