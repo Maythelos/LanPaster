@@ -22,7 +22,7 @@ use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex, Notify},
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
@@ -175,7 +175,8 @@ pub struct AppContext {
     pub seen: Arc<Mutex<SeenEvents>>,
     pub dialed: Arc<Mutex<HashSet<String>>>,
     pub sync_enabled: Arc<AtomicBool>,
-    pub activity_seq: Arc<AtomicU64>,
+    /// 收到远端剪贴并写入本地后唤醒托盘播放提示动画。
+    pub activity: Arc<Notify>,
     /// Devices discovered by mDNS, keyed by device id.
     discovered: std::sync::Mutex<HashMap<String, DiscoveredPeer>>,
     /// Wakes up the mDNS thread for a manual rescan.
@@ -199,7 +200,7 @@ impl AppContext {
             seen: Arc::new(Mutex::new(SeenEvents::new())),
             dialed: Arc::new(Mutex::new(HashSet::new())),
             sync_enabled: Arc::new(AtomicBool::new(true)),
-            activity_seq: Arc::new(AtomicU64::new(0)),
+            activity: Arc::new(Notify::new()),
             discovered: std::sync::Mutex::new(HashMap::new()),
             scan_tx: std::sync::Mutex::new(None),
             conn_seq: AtomicU64::new(1),
@@ -215,7 +216,7 @@ impl AppContext {
     }
 
     pub fn notify_activity(&self) {
-        self.activity_seq.fetch_add(1, Ordering::Relaxed);
+        self.activity.notify_one();
     }
 
     /// Record a local clipboard event in the bounded in-memory history. This

@@ -7,6 +7,7 @@ use crate::{
     protocol::PROTOCOL_VERSION,
 };
 use anyhow::{Context, Result};
+use image::RgbaImage;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -39,6 +40,12 @@ const ICON_OFF: &[u8] = include_bytes!("../assets/tray-off-color.png");
 const ICON_ON: &[u8] = include_bytes!("../assets/tray-on-color.png");
 #[cfg(not(target_os = "macos"))]
 const ICON_ACTIVE: &[u8] = include_bytes!("../assets/tray-active-color.png");
+
+/// 收到剪贴后高亮图标停留的时间。
+const ACTIVITY_LINGER: Duration = Duration::from_millis(1400);
+/// 高亮期间的呼吸动画时长；结束后保持高亮到 `ACTIVITY_LINGER`。
+const ANIMATION_DURATION: Duration = Duration::from_millis(1000);
+const FRAME_INTERVAL: Duration = Duration::from_millis(40);
 
 #[derive(Debug)]
 enum UserEvent {
@@ -310,6 +317,60 @@ struct AppHandler {
     tray: Option<TrayIcon>,
     failed: bool,
     active_until: Option<Instant>,
+    /// 高亮图标的原始 RGBA，用于按帧生成呼吸动画。
+    active_image: Option<RgbaImage>,
+    animation_start: Option<Instant>,
+    animation_frame: Option<usize>,
+}
+
+impl AppHandler {
+    /// 按时间推进收到剪贴后的呼吸动画，返回下一个需要处理的时刻。
+    /// `None` 表示当前没有需要等待的状态，事件循环可以回到 `Wait`。
+    fn advance_activity(&mut self, now: Instant) -> Option<Instant> {
+        let until = self.active_until?;
+        if now >= until {
+            self.active_until = None;
+            self.animation_start = None;
+            self.animation_frame = None;
+            if let Some(menu) = self.menu.as_ref() {
+                update_tray_status(menu, self.tray.as_ref(), &self.app, false);
+            }
+            return None;
+        }
+
+        let Some(start) = self.animation_start else {
+            return Some(until);
+        };
+        let elapsed = now.saturating_duration_since(start);
+        if elapsed >= ANIMATION_DURATION {
+            // 动画结束后保持完整亮度的高亮图标，直到 active_until 到期。
+            if self.animation_frame.take().is_some() {
+                self.apply_animation_frame(ANIMATION_DURATION);
+            }
+            return Some(until);
+        }
+
+        let frame = (elapsed.as_millis() / FRAME_INTERVAL.as_millis()) as usize;
+        if self.animation_frame != Some(frame) {
+            self.animation_frame = Some(frame);
+            // 第 0 帧就是完整亮度，开始时已经由 update_tray_status 设置过。
+            if frame > 0 {
+                self.apply_animation_frame(elapsed);
+            }
+        }
+        let next = start + FRAME_INTERVAL * (frame as u32 + 1);
+        Some(next.min(until))
+    }
+
+    fn apply_animation_frame(&self, elapsed: Duration) {
+        let (Some(tray), Some(image)) = (self.tray.as_ref(), self.active_image.as_ref()) else {
+            return;
+        };
+        match dimmed_icon(image, activity_alpha(elapsed)) {
+            Ok(icon) => set_tray_icon(tray, icon),
+            Err(err) => warn!("failed to build tray animation frame: {err:#}"),
+        }
+    }
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
@@ -335,6 +396,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.native_menu = _native_menu;
                 }
                 self.tray = Some(tray);
+                match load_rgba(ICON_ACTIVE) {
+                    Ok(image) => self.active_image = Some(image),
+                    Err(err) => warn!("failed to decode active tray icon: {err:#}"),
+                }
                 info!("tray icon started");
             }
             Err(err) => {
@@ -476,28 +541,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
             }
             UserEvent::Activity => {
-                self.active_until = Some(Instant::now() + Duration::from_millis(1200));
-                if let Some(menu) = self.menu.as_mut() {
+                let now = Instant::now();
+                self.active_until = Some(now + ACTIVITY_LINGER);
+                self.animation_start = Some(now);
+                self.animation_frame = None;
+                if let Some(menu) = self.menu.as_ref() {
                     update_tray_status(menu, self.tray.as_ref(), &self.app, true);
                 }
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    self.active_until.unwrap(),
-                ));
+                match self.advance_activity(now) {
+                    Some(deadline) => {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline))
+                    }
+                    None => event_loop.set_control_flow(ControlFlow::Wait),
+                }
             }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(deadline) = self.active_until {
-            if Instant::now() >= deadline {
-                self.active_until = None;
-                if let Some(menu) = self.menu.as_mut() {
-                    update_tray_status(menu, self.tray.as_ref(), &self.app, false);
-                }
-                event_loop.set_control_flow(ControlFlow::Wait);
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
+        match self.advance_activity(Instant::now()) {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
@@ -642,16 +706,11 @@ pub fn run_tray(
     });
 
     let proxy = event_loop.create_proxy();
-    let activity = app.activity_seq.clone();
+    let activity = app.activity.clone();
     runtime.spawn(async move {
-        let mut last = activity.load(Ordering::Relaxed);
         loop {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let current = activity.load(Ordering::Relaxed);
-            if current != last {
-                last = current;
-                let _ = proxy.send_event(UserEvent::Activity);
-            }
+            activity.notified().await;
+            let _ = proxy.send_event(UserEvent::Activity);
         }
     });
 
@@ -685,6 +744,9 @@ pub fn run_tray(
         tray: None,
         failed: false,
         active_until: None,
+        active_image: None,
+        animation_start: None,
+        animation_frame: None,
     };
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut handler)?;
@@ -778,24 +840,56 @@ fn update_tray_status(
             ICON_ON
         };
         if let Ok(icon) = load_icon(icon) {
-            #[cfg(target_os = "macos")]
-            {
-                let _ = tray.set_icon_templated(Some(icon));
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = tray.set_icon(Some(icon));
-            }
+            set_tray_icon(tray, icon);
         }
     }
 }
 
-fn load_icon(bytes: &[u8]) -> Result<Icon> {
-    let image = image::load_from_memory(bytes)
+fn set_tray_icon(tray: &TrayIcon, icon: Icon) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = tray.set_icon_templated(Some(icon));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = tray.set_icon(Some(icon));
+    }
+}
+
+fn load_rgba(bytes: &[u8]) -> Result<RgbaImage> {
+    Ok(image::load_from_memory(bytes)
         .context("decode tray icon")?
-        .into_rgba8();
+        .into_rgba8())
+}
+
+fn load_icon(bytes: &[u8]) -> Result<Icon> {
+    let image = load_rgba(bytes)?;
     let (width, height) = image.dimensions();
     Icon::from_rgba(image.into_raw(), width, height).context("create tray icon")
+}
+
+/// 收到剪贴后的呼吸曲线：从 1.0 开始，两次平滑变暗后回到 1.0。
+fn activity_alpha(elapsed: Duration) -> f32 {
+    const MIN_ALPHA: f32 = 0.5;
+    const BREATHS: f32 = 2.0;
+    let phase = (elapsed.as_secs_f32() / ANIMATION_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+    let wave = 0.5 + 0.5 * (std::f32::consts::TAU * BREATHS * phase).cos();
+    MIN_ALPHA + (1.0 - MIN_ALPHA) * wave
+}
+
+fn dimmed_icon(image: &RgbaImage, alpha: f32) -> Result<Icon> {
+    let image = dim_image(image, alpha);
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).context("create tray icon")
+}
+
+fn dim_image(image: &RgbaImage, alpha: f32) -> RgbaImage {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let mut out = image.clone();
+    for pixel in out.pixels_mut() {
+        pixel[3] = (f32::from(pixel[3]) * alpha).round() as u8;
+    }
+    out
 }
 
 fn open_config_window(config_path: &Path, panel: &str) {
@@ -819,5 +913,31 @@ fn open_config_window(config_path: &Path, panel: &str) {
             }
         }
         Err(err) => warn!("failed to locate current executable: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn activity_alpha_breathes_twice_and_returns_to_full() {
+        assert!((activity_alpha(Duration::ZERO) - 1.0).abs() < 1e-6);
+        let quarter = ANIMATION_DURATION / 4;
+        assert!(activity_alpha(quarter) < 0.55);
+        assert!(activity_alpha(quarter * 2) > 0.999);
+        assert!(activity_alpha(quarter * 3) < 0.55);
+        assert!((activity_alpha(ANIMATION_DURATION) - 1.0).abs() < 1e-6);
+        assert!((activity_alpha(ANIMATION_DURATION * 2) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dim_image_scales_alpha_without_touching_color() {
+        let image = RgbaImage::from_pixel(1, 1, Rgba([10, 20, 30, 200]));
+        let dimmed = dim_image(&image, 0.5);
+        assert_eq!(dimmed.get_pixel(0, 0), &Rgba([10, 20, 30, 100]));
+        let full = dim_image(&image, 1.0);
+        assert_eq!(full.get_pixel(0, 0), &Rgba([10, 20, 30, 200]));
     }
 }
