@@ -78,6 +78,9 @@ Ubuntu 22.04 (glibc 2.35+).
   when the tray icon is clicked again.
 - **Useful defaults** — size/count limits, file cache cleanup, in-memory history,
   single-instance locking, and hot reload for most settings.
+- **Manual GitHub self-update** — the tray menu checks the latest GitHub Release
+  on demand, verifies the downloaded package against `SHA256SUMS.txt`, and waits
+  for you to confirm before replacing the app or binary.
 
 ## How it works
 
@@ -172,6 +175,22 @@ within about a second:
 Changing `listen_port`, `mdns_enabled`, `peers`, `device_id`, or the device
 keys requires a restart.
 
+### Updates
+
+Updates are fully manual. The tray menu has **Check for updates**; nothing is
+queried at startup or on a timer. When you click it, LanPaster queries the latest
+GitHub Release, picks the asset for the current platform, downloads it, and
+verifies its SHA-256 against `SHA256SUMS.txt`. If a newer version exists, the
+menu item becomes **Update to vX…**; nothing is downloaded until you click that
+item, and the app only replaces itself after you confirm. `lanpaster update
+check` performs the check from the command line without downloading.
+
+macOS expects the `.app` to be in `Applications` or another user-writable
+location; App Translocation and read-only volumes are rejected. Linux `.deb`
+installs are not self-updated because dpkg owns `/usr/bin/lanpaster`; use `apt`
+or the release page. The checksum protects against truncated or modified
+downloads, but it is not a substitute for code signing.
+
 ## Command line
 
 | Command | Description |
@@ -182,6 +201,7 @@ keys requires a restart.
 | `lanpaster ui [connection\|local]` | Open the settings window |
 | `lanpaster beep` | Play the notification sound |
 | `lanpaster autostart <enable\|disable\|status>` | Manage login autostart |
+| `lanpaster update [check]` | Check GitHub Releases without installing |
 | `lanpaster config` | Print the active config |
 | `lanpaster version` | Print the version |
 | `lanpaster help` | Show CLI help |
@@ -225,6 +245,9 @@ The version in `Cargo.toml` is the single source of truth for package names.
   LLVM-MinGW (`x86_64-pc-windows-gnullvm`) and contains both the GUI and console
   binaries. A native `cargo build --release` also works for development; it
   produces a console-subsystem executable.
+- **Checksums** — after collecting every platform's current-version assets in
+  `dist/`, run `./scripts/checksums.sh` to regenerate `SHA256SUMS.txt`. The
+  self-updater refuses releases that omit it or the matching entry.
 
 ## Security and privacy
 
@@ -241,6 +264,9 @@ The version in `Cargo.toml` is the single source of truth for package names.
   file. Do not share either without redacting the key first.
 - Received files are never opened automatically and do not keep executable or
   setuid bits.
+- Self-update downloads use HTTPS and are verified against the release
+  `SHA256SUMS.txt`. Releases are not separately signed beyond that checksum, so
+  a compromised GitHub account could still publish a malicious update.
 - **Not implemented:** OS keychain storage, certificate pinning, signed audit
   logs, or protection against a compromised local account. Treat this as a
   LAN-trusted tool, not as a hardened secure messenger.
@@ -282,6 +308,7 @@ src/
   sound.rs       Notification sound
   autostart.rs   Login autostart
   instance.rs    Single-instance lock
+  updater.rs     GitHub Releases self-update
 ui/app.slint     Settings window layout
 assets/          App and tray icons
 packaging/       Platform packaging files

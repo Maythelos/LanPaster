@@ -1,6 +1,6 @@
 [package]
 name = "lanpaster"
-version = "0.7.12"
+version = "0.7.13"
 edition = "2021"
 rust-version = "1.80"
 description = "LAN clipboard sync for text, images and files"
@@ -24,10 +24,13 @@ mdns-sd = "0.21"
 if-addrs = "0.15"
 rodio = { version = "0.23", default-features = false, features = ["playback"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 slint = { version = "1.19", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
 snow = "0.9"
+ureq = "2.12"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "fs", "signal"] }
 tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 winit = "0.30"

@@ -5,13 +5,17 @@ use crate::{
     net::AppContext,
     pairing::PendingInfo,
     protocol::PROTOCOL_VERSION,
+    updater::{self, ReleaseInfo, UpdateEvent},
 };
 use anyhow::{Context, Result};
 use image::RgbaImage;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 use std::time::{Duration, Instant};
 use tray_icon::{
@@ -24,7 +28,7 @@ use tracing::{debug, info, warn};
 use winit::{
     application::ApplicationHandler,
     event::StartCause,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
 };
 
 #[cfg(target_os = "macos")]
@@ -56,8 +60,20 @@ enum UserEvent {
     History(Vec<Arc<HistoryItem>>),
     Pairing(Vec<PendingInfo>),
     Activity,
+    Update(UpdateEvent),
     #[cfg(target_os = "macos")]
     ShowMenu(Rect),
+}
+
+#[derive(Debug, Clone)]
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(ReleaseInfo),
+    Downloading(String),
+    Installing(String),
+    Failed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +104,7 @@ struct TrayMenu {
     connection: MenuItem,
     local: MenuItem,
     test_sound: MenuItem,
+    update: MenuItem,
     quit: MenuItem,
     online_count: usize,
 }
@@ -119,6 +136,7 @@ impl TrayMenu {
         let connection = MenuItem::new("连接设置", true, None);
         let local = MenuItem::new("本地设置", true, None);
         let test_sound = MenuItem::new("测试提示音", true, None);
+        let update = MenuItem::new("检查更新", true, None);
         let quit = MenuItem::new("退出 LanPaster", true, None);
 
         // Group the menu by purpose: sync at the top, then network devices,
@@ -139,6 +157,7 @@ impl TrayMenu {
         menu.append(&autostart)?;
         menu.append(&test_sound)?;
         menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&update)?;
         menu.append(&quit)?;
 
         // Keep the menu alive through the tray icon builder below; item handles
@@ -164,10 +183,35 @@ impl TrayMenu {
                 connection,
                 local,
                 test_sound,
+                update,
                 quit,
                 online_count: 0,
             },
         ))
+    }
+
+    fn set_update(&mut self, state: &UpdateState) {
+        let (text, enabled) = match state {
+            UpdateState::Idle => ("检查更新".to_string(), true),
+            UpdateState::Checking => ("正在检查更新…".to_string(), false),
+            UpdateState::UpToDate => (
+                format!("已是最新版本 (v{})", env!("CARGO_PKG_VERSION")),
+                true,
+            ),
+            UpdateState::Available(info) => (format!("更新到 v{}…", info.version), true),
+            UpdateState::Downloading(version) => {
+                (format!("正在下载 v{version}…"), false)
+            }
+            UpdateState::Installing(version) => {
+                (format!("正在安装 v{version}…"), false)
+            }
+            UpdateState::Failed(reason) => (
+                format!("更新失败：{}，点击重试", truncate(reason, 36)),
+                true,
+            ),
+        };
+        self.update.set_text(text);
+        self.update.set_enabled(enabled);
     }
 
     fn update_requests(&mut self, pending: &[PendingInfo]) {
@@ -309,6 +353,9 @@ struct AppHandler {
     app: Arc<AppContext>,
     runtime: tokio::runtime::Handle,
     config_path: PathBuf,
+    proxy: EventLoopProxy<UserEvent>,
+    update_state: UpdateState,
+    update_busy: Arc<AtomicBool>,
     menu: Option<TrayMenu>,
     /// macOS 上菜单不再交给 NSStatusItem 自动弹出。系统会把菜单往
     /// 下放一个菜单栏的高度；这里保留原生 NSMenu，自己定位弹出。
@@ -499,6 +546,31 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     open_config_window(&self.config_path, "local");
                 } else if id == *menu.test_sound.id() {
                     crate::sound::play();
+                } else if id == *menu.update.id() {
+                    match self.update_state.clone() {
+                        UpdateState::Available(info) => {
+                            if !self.update_busy.swap(true, Ordering::SeqCst) {
+                                self.update_state =
+                                    UpdateState::Downloading(info.version.to_string());
+                                menu.set_update(&self.update_state);
+                                self.runtime.spawn(download_update(
+                                    self.proxy.clone(),
+                                    info,
+                                    self.update_busy.clone(),
+                                ));
+                            }
+                        }
+                        UpdateState::Checking
+                        | UpdateState::Downloading(_)
+                        | UpdateState::Installing(_) => {}
+                        _ => {
+                            spawn_update_check(
+                                &self.runtime,
+                                self.proxy.clone(),
+                                self.update_busy.clone(),
+                            );
+                        }
+                    }
                 } else if id == *menu.quit.id() {
                     info!("quit requested from tray");
                     event_loop.exit();
@@ -555,6 +627,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     None => event_loop.set_control_flow(ControlFlow::Wait),
                 }
             }
+            UserEvent::Update(event) => {
+                let exit = matches!(event, UpdateEvent::Installing(_));
+                self.update_state = match event {
+                    UpdateEvent::Checking => UpdateState::Checking,
+                    UpdateEvent::UpToDate => UpdateState::UpToDate,
+                    UpdateEvent::Available(info) => UpdateState::Available(info),
+                    UpdateEvent::Downloading(version) => UpdateState::Downloading(version),
+                    UpdateEvent::Installing(version) => UpdateState::Installing(version),
+                    UpdateEvent::Failed(err) => {
+                        warn!("update failed: {err}");
+                        UpdateState::Failed(err)
+                    }
+                };
+                if let Some(menu) = self.menu.as_mut() {
+                    menu.set_update(&self.update_state);
+                }
+                if exit {
+                    info!("restarting for update");
+                    event_loop.exit();
+                }
+            }
         }
     }
 
@@ -562,6 +655,96 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         match self.advance_activity(Instant::now()) {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+}
+
+fn spawn_update_check(
+    runtime: &tokio::runtime::Handle,
+    proxy: EventLoopProxy<UserEvent>,
+    busy: Arc<AtomicBool>,
+) {
+    runtime.spawn(run_update_check(proxy, busy));
+}
+
+fn truncate(value: &str, max: usize) -> String {
+    let single_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= max {
+        single_line
+    } else {
+        let mut out: String = single_line.chars().take(max).collect();
+        out.push('…');
+        out
+    }
+}
+
+async fn run_update_check(proxy: EventLoopProxy<UserEvent>, busy: Arc<AtomicBool>) {
+    if busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Checking));
+    let result = tokio::task::spawn_blocking(updater::check_for_update).await;
+    match result {
+        Ok(Ok(Some(info))) => {
+            info!("update available: v{}", info.version);
+            let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Available(info)));
+        }
+        Ok(Ok(None)) => {
+            info!("update check: already up to date");
+            let _ = proxy.send_event(UserEvent::Update(UpdateEvent::UpToDate));
+        }
+        Ok(Err(err)) => {
+            let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Failed(format!(
+                "{err:#}"
+            ))));
+        }
+        Err(err) => {
+            let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Failed(format!(
+                "检查更新任务失败：{err}"
+            ))));
+        }
+    }
+    busy.store(false, Ordering::SeqCst);
+}
+
+async fn download_update(
+    proxy: EventLoopProxy<UserEvent>,
+    info: ReleaseInfo,
+    busy: Arc<AtomicBool>,
+) {
+    if let Err(err) = updater::preflight_install() {
+        let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Failed(format!(
+            "{err:#}"
+        ))));
+        busy.store(false, Ordering::SeqCst);
+        return;
+    }
+    let version = info.version.to_string();
+    let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Downloading(
+        version.clone(),
+    )));
+    let result = tokio::task::spawn_blocking(move || updater::download_and_stage(&info)).await;
+    match result {
+        Ok(Ok(staged)) => match updater::spawn_installer(&staged) {
+            Ok(()) => {
+                let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Installing(version)));
+            }
+            Err(err) => {
+                let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Failed(format!(
+                    "{err:#}"
+                ))));
+                busy.store(false, Ordering::SeqCst);
+            }
+        },
+        Ok(Err(err)) => {
+            let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Failed(format!("{err:#}"))));
+            busy.store(false, Ordering::SeqCst);
+        }
+        Err(err) => {
+            let _ = proxy.send_event(UserEvent::Update(UpdateEvent::Failed(format!(
+                "下载更新任务失败：{err}"
+            ))));
+            busy.store(false, Ordering::SeqCst);
         }
     }
 }
@@ -734,10 +917,15 @@ pub fn run_tray(
         }
     });
 
+    let update_busy = Arc::new(AtomicBool::new(false));
+
     let mut handler = AppHandler {
         app,
         runtime: runtime.clone(),
         config_path,
+        proxy: event_loop.create_proxy(),
+        update_state: UpdateState::Idle,
+        update_busy,
         menu: None,
         #[cfg(target_os = "macos")]
         native_menu: None,
@@ -758,6 +946,7 @@ pub fn run_tray(
 
 fn build_tray(app: &Arc<AppContext>) -> Result<(TrayMenu, TrayIcon, Option<Menu>)> {
     let (menu, mut menu_state) = TrayMenu::new()?;
+    menu_state.set_update(&UpdateState::Idle);
     menu_state.update_discovered(&[], app.config.load().mdns_enabled);
     let icon = load_icon(ICON_OFF)?;
     let builder = TrayIconBuilder::new()

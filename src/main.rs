@@ -12,6 +12,7 @@ mod protocol;
 mod sound;
 mod tray;
 mod ui;
+mod updater;
 
 use crate::{
     config::{cache_dir, incoming_dir, Config},
@@ -37,6 +38,7 @@ fn main() -> Result<()> {
         "ui" => run_config_ui(&args),
         "beep" => { sound::test_beep(); Ok(()) }
         "autostart" => autostart_cmd(&args),
+        "update" => update_cmd(&args),
         "init" => init(),
         "config" | "print-config" => print_config(),
         "version" | "--version" | "-V" => {
@@ -72,6 +74,25 @@ fn autostart_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn update_cmd(args: &[String]) -> Result<()> {
+    let action = args.get(1).map(String::as_str).unwrap_or("check");
+    match action {
+        "check" | "--check" => match updater::check_for_update()? {
+            Some(info) => {
+                println!("发现新版本 v{}", info.version);
+                println!("安装包: {}", info.asset_name);
+                println!("发布页: {}", info.page_url);
+            }
+            None => println!(
+                "LanPaster v{} 已是最新版本",
+                updater::current_version()?
+            ),
+        },
+        other => anyhow::bail!("unknown update action {other:?}; try `lanpaster update check`"),
+    }
+    Ok(())
+}
+
 fn run_config_ui(args: &[String]) -> Result<()> {
     let panel = match args.get(1) {
         Some(value) => ui::Panel::parse(value)
@@ -86,7 +107,7 @@ fn run_config_ui(args: &[String]) -> Result<()> {
 
 fn print_help() {
     println!(
-        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui [connection|local]\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster config\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
+        "LanPaster {}\n\nUSAGE:\n    lanpaster [run] [--headless]\n    lanpaster init\n    lanpaster ui [connection|local]\n    lanpaster beep\n    lanpaster autostart <enable|disable|status>\n    lanpaster update [check]\n    lanpaster config\n    lanpaster version\n\nENV:\n    LANPASTER_CONFIG=/path/to/config.toml\n    RUST_LOG=info",
         env!("CARGO_PKG_VERSION")
     );
 }

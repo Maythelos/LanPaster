@@ -66,6 +66,8 @@ sudo apt install ./LanPaster-<version>-linux-amd64.deb
   进程，关闭即退出，再次点击托盘图标会复用已打开的窗口。
 - **实用默认值** — 大小 / 数量限制、文件缓存清理、内存剪贴历史、单实例锁，
   以及大部分配置的热加载。
+- **手动 GitHub 自更新** — 只有你从托盘菜单点击「检查更新」时才联网查询最新
+  Release；下载后用 `SHA256SUMS.txt` 校验，再等你确认才替换应用或二进制。
 
 ## 工作原理
 
@@ -150,6 +152,18 @@ lanpaster ui local        # 轮询、限制、文件同步、提示音、历史
 
 修改 `listen_port`、`mdns_enabled`、`peers`、`device_id` 或设备密钥后需要重启。
 
+### 更新
+
+更新完全手动。托盘菜单里有「检查更新」，启动时和后台都不会主动查询。点击后
+LanPaster 才会查询 GitHub 最新 Release，选择当前平台的安装包，下载后按
+`SHA256SUMS.txt` 校验 SHA-256。发现新版本时菜单项会变成「更新到 vX…」，在你
+再次点击确认前不会下载安装，也不会重启。`lanpaster update check` 只从命令行
+检查、不下载。
+
+macOS 要求 `.app` 位于“应用程序”或其他用户可写目录；App Translocation
+和只读卷会被拒绝。Linux 的 `.deb` 安装由 dpkg 管理，不会自更新；请使用
+`apt` 或 Release 页面。校验和只能防止下载被截断或篡改，不能替代代码签名。
+
 ## 命令行
 
 | 命令 | 说明 |
@@ -160,6 +174,7 @@ lanpaster ui local        # 轮询、限制、文件同步、提示音、历史
 | `lanpaster ui [connection\|local]` | 打开设置窗口 |
 | `lanpaster beep` | 播放提示音 |
 | `lanpaster autostart <enable\|disable\|status>` | 管理开机自启 |
+| `lanpaster update [check]` | 查询 GitHub Releases，不下载安装 |
 | `lanpaster config` | 打印当前配置 |
 | `lanpaster version` | 打印版本号 |
 | `lanpaster help` | 显示命令行帮助 |
@@ -201,6 +216,9 @@ cargo test
   (`x86_64-pc-windows-gnullvm`) 交叉编译，包含 GUI 和 console 两个 exe。开发时
   也可以直接在 Windows 上执行 `cargo build --release`；原生构建默认是 console
   子系统。
+- **校验和** — 当前版本的所有平台产物都放进 `dist/` 后，运行
+  `./scripts/checksums.sh` 重新生成 `SHA256SUMS.txt`。自更新会拒绝没有该文件或
+  缺少对应条目的 Release。
 
 ## 安全与隐私
 
@@ -212,6 +230,8 @@ cargo test
 - `config.toml` 里包含私钥，`lanpaster config` 会打印完整配置；分享前务必先
   涂掉私钥。
 - 接收端不会自动打开文件，也不会保留可执行 / setuid 权限。
+- 自更新通过 HTTPS 下载，并用 Release 里的 `SHA256SUMS.txt` 校验。Release
+  没有校验和之外的独立签名，因此 GitHub 账号被盗时仍可能发布恶意更新。
 - **尚未实现：**系统钥匙串存储、证书固定、签名审计日志，或对本地账号被攻破的
   防护。请把它当作“信任局域网”的工具，而不是高强度安全通信软件。
 - 剪贴历史保存在内存中且是明文；复制过密码等敏感内容后，建议使用「清空剪贴
@@ -251,6 +271,7 @@ src/
   sound.rs       提示音
   autostart.rs   开机自启
   instance.rs    单实例锁
+  updater.rs     GitHub Releases 自更新
 ui/app.slint     设置窗口布局
 assets/          App 与托盘图标
 packaging/       各平台打包文件

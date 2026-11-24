@@ -75,6 +75,9 @@ tar.gz を展開して `./usr/bin/lanpaster` を実行する場合は、Release 
   場合は、開いているウィンドウを再利用します。
 - **実用的な既定値** — サイズ/件数の上限、受信ファイルキャッシュの整理、メモリ
   上の履歴、単一インスタンス、ほとんどの設定のホットリロード。
+- **手動 GitHub セルフアップデート** — トレイメニューの「アップデートを確認」を
+  押したときだけ最新 Release を問い合わせ、`SHA256SUMS.txt` で検証します。実際の
+  置き換えは、もう一度確認してから行います。
 
 ## 仕組み
 
@@ -166,6 +169,20 @@ lanpaster ui local        # ポーリング、上限、ファイル同期、音�
 `listen_port`、`mdns_enabled`、`peers`、`device_id`、デバイス鍵の変更には
 再起動が必要です。
 
+### アップデート
+
+アップデートは完全に手動です。トレイメニューの「アップデートを確認」を押した
+ときだけ、最新の GitHub Release を問い合わせます。起動時やバックグラウンドで
+自動確認はしません。新しいバージョンがあればメニューが「vX に更新…」に変わり、
+もう一度クリックするまでダウンロードもインストールも行いません。
+`lanpaster update check` はコマンドラインから確認だけを行います。
+
+macOS では `.app` が「アプリケーション」などユーザーが書き込める場所にある
+必要があります。App Translocation と読み取り専用ボリュームは拒否されます。
+Linux の `.deb` インストールは dpkg が管理するため自己更新しません。`apt` か
+Release ページを使用してください。チェックサムはダウンロードの破損・改変を
+防ぎますが、コード署名の代替ではありません。
+
 ## コマンドライン
 
 | コマンド | 説明 |
@@ -176,6 +193,7 @@ lanpaster ui local        # ポーリング、上限、ファイル同期、音�
 | `lanpaster ui [connection\|local]` | 設定画面を開く |
 | `lanpaster beep` | 通知音を鳴らす |
 | `lanpaster autostart <enable\|disable\|status>` | 自動起動を管理 |
+| `lanpaster update [check]` | GitHub Releases を確認（インストールはしない） |
 | `lanpaster config` | 現在の設定を表示 |
 | `lanpaster version` | バージョンを表示 |
 | `lanpaster help` | CLI ヘルプを表示 |
@@ -219,6 +237,9 @@ cargo test
   (`x86_64-pc-windows-gnullvm`) でクロスコンパイルし、GUI 版と console 版の両方
   を同梱しています。Windows 上での `cargo build --release` も開発用に使えますが、
   ネイティブビルドの既定は console サブシステムです。
+- **チェックサム** — 現在のバージョンの全プラットフォームの成果物を `dist/` に
+  揃えたら、`./scripts/checksums.sh` を実行して `SHA256SUMS.txt` を再生成します。
+  セルフアップデートは、このファイルや該当エントリがない Release を拒否します。
 
 ## セキュリティとプライバシー
 
@@ -234,6 +255,9 @@ cargo test
 - `config.toml` には秘密鍵が含まれ、`lanpaster config` は設定全体を出力します。
   共有する前に必ず秘密鍵を伏せてください。
 - 受信ファイルは自動で開かず、実行ビット / setuid ビットも保持しません。
+- セルフアップデートは HTTPS でダウンロードし、Release の `SHA256SUMS.txt` で
+  検証します。チェックサム以外の署名はないため、GitHub アカウントが侵害される
+  と悪意あるアップデートが公開される可能性があります。
 - **未実装：**OS キーチェーン、証明書ピンニング、署名付き監査ログ、ローカル
   アカウント侵害への対策。LAN を信頼するツールであり、高強度のセキュア
   メッセンジャーではありません。
@@ -276,6 +300,7 @@ src/
   sound.rs       通知音
   autostart.rs   自動起動
   instance.rs    単一インスタンスロック
+  updater.rs     GitHub Releases セルフアップデート
 ui/app.slint     設定画面のレイアウト
 assets/          アプリアイコンとトレイアイコン
 packaging/       各プラットフォームのパッケージング
