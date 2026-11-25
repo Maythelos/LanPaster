@@ -241,10 +241,11 @@ The version in `Cargo.toml` is the single source of truth for package names.
 - **Linux** — `./scripts/package-linux.sh` builds a `.deb` and `.tar.gz` inside
   an Ubuntu 22.04 Docker container. Set `DOCKER=` if `docker` is not on your
   `PATH`.
-- **Windows** — the release ZIP is currently cross-compiled with
-  LLVM-MinGW (`x86_64-pc-windows-gnullvm`) and contains both the GUI and console
-  binaries. A native `cargo build --release` also works for development; it
-  produces a console-subsystem executable.
+- **Windows** — `./scripts/package-windows.sh` cross-compiles with LLVM-MinGW
+  (`x86_64-pc-windows-gnullvm`) and writes a ZIP containing both the GUI and
+  console executables. Set `LLVM_MINGW=/path/to/llvm-mingw` or put
+  `x86_64-w64-mingw32-clang` on `PATH`. A native `cargo build --release` also
+  works for development; it produces a console-subsystem executable.
 - **Checksums** — after collecting every platform's current-version assets in
   `dist/`, run `./scripts/checksums.sh` to regenerate `SHA256SUMS.txt`. The
   self-updater refuses releases that omit it or the matching entry.

@@ -212,10 +212,11 @@ cargo test
   ad-hoc 签名。
 - **Linux** — `./scripts/package-linux.sh` 在 Ubuntu 22.04 Docker 容器中构建
   `.deb` 和 `.tar.gz`；如果 `docker` 不在 `PATH`，用 `DOCKER=` 指定。
-- **Windows** — Release 里的 ZIP 目前使用 LLVM-MinGW
-  (`x86_64-pc-windows-gnullvm`) 交叉编译，包含 GUI 和 console 两个 exe。开发时
-  也可以直接在 Windows 上执行 `cargo build --release`；原生构建默认是 console
-  子系统。
+- **Windows** — `./scripts/package-windows.sh` 使用 LLVM-MinGW
+  (`x86_64-pc-windows-gnullvm`) 交叉编译，生成同时包含 GUI 和 console 两个
+  exe 的 ZIP。用 `LLVM_MINGW=/path/to/llvm-mingw` 指定工具链，或把
+  `x86_64-w64-mingw32-clang` 放进 `PATH`。开发时也可以直接在 Windows 上执行
+  `cargo build --release`；原生构建默认是 console 子系统。
 - **校验和** — 当前版本的所有平台产物都放进 `dist/` 后，运行
   `./scripts/checksums.sh` 重新生成 `SHA256SUMS.txt`。自更新会拒绝没有该文件或
   缺少对应条目的 Release。

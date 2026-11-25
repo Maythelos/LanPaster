@@ -233,10 +233,12 @@ cargo test
 - **Linux** — `./scripts/package-linux.sh` が Ubuntu 22.04 の Docker コンテナ内で
   `.deb` と `.tar.gz` を生成します。`docker` が `PATH` にない場合は `DOCKER=` で
   指定してください。
-- **Windows** — Release の ZIP は現在 LLVM-MinGW
+- **Windows** — `./scripts/package-windows.sh` が LLVM-MinGW
   (`x86_64-pc-windows-gnullvm`) でクロスコンパイルし、GUI 版と console 版の両方
-  を同梱しています。Windows 上での `cargo build --release` も開発用に使えますが、
-  ネイティブビルドの既定は console サブシステムです。
+  を含む ZIP を生成します。`LLVM_MINGW=/path/to/llvm-mingw` を指定するか、
+  `x86_64-w64-mingw32-clang` を `PATH` に入れてください。Windows 上での
+  `cargo build --release` も開発用に使えますが、ネイティブビルドの既定は
+  console サブシステムです。
 - **チェックサム** — 現在のバージョンの全プラットフォームの成果物を `dist/` に
   揃えたら、`./scripts/checksums.sh` を実行して `SHA256SUMS.txt` を再生成します。
   セルフアップデートは、このファイルや該当エントリがない Release を拒否します。
