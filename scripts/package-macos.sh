@@ -8,9 +8,17 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 ICON_TAG="${VERSION//./}"
 APP="$ROOT/dist/LanPaster.app"
 ZIP="$ROOT/dist/LanPaster-${VERSION}-macos-universal.zip"
+ICON_SRC="$ROOT/assets/AppIcon-1024.png"
+ICON_OUT="$ROOT/assets/AppIcon.icns"
+ICON_BUILDER="$ROOT/scripts/build-macos-icon.swift"
 
 rm -rf "$APP" "$ZIP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ROOT/dist"
+
+if [[ ! -f "$ICON_OUT" || "$ICON_SRC" -nt "$ICON_OUT" || "$ICON_BUILDER" -nt "$ICON_OUT" ]]; then
+  echo "Generating macOS app icon..."
+  swift "$ICON_BUILDER" "$ICON_SRC" "$ICON_OUT"
+fi
 
 if [[ "${ONLY_ARM64:-0}" == "1" ]]; then
   echo "Building arm64 only..."
@@ -32,7 +40,7 @@ else
 fi
 
 chmod +x "$APP/Contents/MacOS/lanpaster"
-cp "$ROOT/assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon-${ICON_TAG}.icns"
+cp "$ICON_OUT" "$APP/Contents/Resources/AppIcon-${ICON_TAG}.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
